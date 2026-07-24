@@ -46,7 +46,8 @@ class MetricsMiddleware(BaseHTTPMiddleware):
             f'"method": "{request.method}", '
             f'"path": "{request.url.path}", '
             f'"status": {response.status_code}, '
-            f'"duration_ms": {duration_ms:.1f}}}'
+            f'"duration_ms": {duration_ms:.1f}}}',
+            flush=True,
         )
         return response
 
