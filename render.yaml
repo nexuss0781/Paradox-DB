@@ -1,0 +1,39 @@
+services:
+  - type: web
+    name: paradox-gateway
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: paradox-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: paradox-redis
+          type: redis
+          property: connectionString
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_API_ID
+        sync: false
+      - key: TELEGRAM_API_HASH
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: API_KEY_SALT
+        generateValue: true
+      - key: PORT
+        value: 8000
+
+  - type: postgresql
+    name: paradox-db
+    plan: free
+    databaseName: paradox_registry
+    ipAllowList: []
+
+  - type: redis
+    name: paradox-redis
+    plan: free
+    ipAllowList: []
+    maxmemoryPolicy: allkeys-lru
