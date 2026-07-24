@@ -1,6 +1,7 @@
 import time
 
 from fastapi import Request, Response
+from starlette.middleware.base import BaseHTTPMiddleware
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
     Counter,
@@ -27,8 +28,8 @@ telegram_api_errors = Counter("telegram_api_errors", "Telegram API failures", ["
 registry_operations = Counter("registry_operations", "Registry DB operations", ["operation"])
 
 
-class MetricsMiddleware:
-    async def __call__(self, request: Request, call_next):
+class MetricsMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
         if request.url.path == "/metrics":
             return await call_next(request)
 
