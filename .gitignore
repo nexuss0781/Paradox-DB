@@ -1,0 +1,16 @@
+node_modules/
+dist/
+.env
+.env.local
+.env.production.local
+*.sqlcipher
+*.db
+*.sqlite
+__pycache__/
+*.pyc
+.mypy_cache/
+.pytest_cache/
+.venv/
+*.egg-info/
+nginx/certs/
+gateway/.venv/

@@ -1,0 +1,27 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "UploadRequest",
+  "description": "Schema for POST /v1/upload multipart form fields",
+  "type": "object",
+  "required": ["database_name"],
+  "properties": {
+    "database_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "description": "Name of the database being uploaded"
+    },
+    "version_type": {
+      "type": "string",
+      "enum": ["full", "changeset", "auto"],
+      "default": "auto",
+      "description": "Type of upload: full snapshot or incremental changeset"
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Version number (defaults to latest + 1)"
+    }
+  },
+  "additionalProperties": false
+}

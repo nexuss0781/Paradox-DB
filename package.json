@@ -1,0 +1,20 @@
+{
+  "name": "paradox-db",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-first SQLite with Telegram-backed cloud sync",
+  "scripts": {
+    "dev": "npm run dev --workspace=client",
+    "build": "npm run build --workspace=client",
+    "lint": "npm run lint --workspaces",
+    "typecheck": "npm run typecheck --workspaces",
+    "test": "npm run test --workspaces"
+  },
+  "workspaces": [
+    "client",
+    "shared"
+  ],
+  "devDependencies": {
+    "typescript": "^5.5.0"
+  }
+}
