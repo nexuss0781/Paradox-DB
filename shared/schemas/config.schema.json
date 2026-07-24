@@ -1,0 +1,41 @@
+{
+  "schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ParadoxDB Config",
+  "type": "object",
+  "properties": {
+    "database_path": { "type": "string", "default": "~/.paradox/data.sqlcipher" },
+    "encryption": {
+      "type": "object",
+      "properties": {
+        "cipher": { "type": "string", "default": "aes-256-cbc" },
+        "kdf_iterations": { "type": "integer", "default": 256000 },
+        "page_size": { "type": "integer", "default": 4096 }
+      }
+    },
+    "sync": {
+      "type": "object",
+      "properties": {
+        "gateway_url": { "type": "string" },
+        "api_key": { "type": "string" },
+        "trigger_timer_seconds": { "type": "integer", "default": 30 },
+        "trigger_ops_threshold": { "type": "integer", "default": 50 },
+        "max_file_size_mb": { "type": "integer", "default": 50 },
+        "auto_sync_on_shutdown": { "type": "boolean", "default": true }
+      }
+    },
+    "conflict": {
+      "type": "object",
+      "properties": {
+        "strategy": { "type": "string", "default": "last-write-wins" },
+        "log_conflicts": { "type": "boolean", "default": true }
+      }
+    },
+    "logging": {
+      "type": "object",
+      "properties": {
+        "level": { "type": "string", "default": "info" },
+        "path": { "type": "string", "default": "~/.paradox/logs/" }
+      }
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "RollbackRequest",
+  "type": "object",
+  "required": ["database_name", "target_version"],
+  "properties": {
+    "database_name": { "type": "string", "minLength": 1, "maxLength": 255 },
+    "target_version": { "type": "integer", "minimum": 1 }
+  },
+  "additionalProperties": false
+}

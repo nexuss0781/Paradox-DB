@@ -1,0 +1,22 @@
+{
+  "name": "@paradox/shared",
+  "version": "0.1.0",
+  "description": "Paradox-DB shared types and schemas",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src/",
+    "validate-schemas": "node scripts/validate-schemas.js"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "eslint": "^9.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "ajv": "^8.17.0",
+    "@types/node": "^22.0.0"
+  }
+}

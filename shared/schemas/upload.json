@@ -1,0 +1,12 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "UploadRequest",
+  "type": "object",
+  "required": ["database_name", "version_type"],
+  "properties": {
+    "database_name": { "type": "string", "minLength": 1, "maxLength": 255 },
+    "version_type": { "type": "string", "enum": ["full", "changeset"] },
+    "version": { "type": "integer", "minimum": 1 }
+  },
+  "additionalProperties": false
+}
