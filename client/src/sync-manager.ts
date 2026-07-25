@@ -5,6 +5,7 @@ import * as path from 'path';
 import * as http from 'http';
 import * as https from 'https';
 
+// Mirrors VersionInfo from shared/src/types.ts
 interface VersionInfo {
   version: number;
   message_id: string;
@@ -12,11 +13,13 @@ interface VersionInfo {
   size_bytes: number;
 }
 
+// Mirrors VersionsResponse from shared/src/types.ts
 interface DownloadResponse {
   database_name: string;
   versions: VersionInfo[];
 }
 
+// Mirrors DatabaseStatus (SyncStatusDatabase) from shared/src/types.ts
 interface StatusDatabase {
   name: string;
   latest_version: number;
@@ -25,15 +28,24 @@ interface StatusDatabase {
   last_sync_at: string | null;
 }
 
+// Mirrors StatusResponse (SyncStatus) from shared/src/types.ts
 interface StatusResponse {
   user_id: string;
   databases: StatusDatabase[];
+}
+
+export interface PushResult {
+  success: boolean;
+  error?: string;
+  version?: number;
 }
 
 export class SyncManager {
   private config: ClientConfig;
   private localVersion: number = 0;
   private syncRetry: RetryManager;
+  private autoSyncTimer: NodeJS.Timeout | null = null;
+  private autoSyncRunning: boolean = false;
 
   constructor(config: ClientConfig) {
     this.config = config;
@@ -151,6 +163,150 @@ export class SyncManager {
     }
   }
 
+  async push(changesetData: Buffer): Promise<PushResult> {
+    const baseUrl = this.config.sync.gateway_url.replace(/\/+$/, '');
+    const url = `${baseUrl}/upload`;
+    const body = {
+      database_name: path.basename(this.config.database_path),
+      changeset_data: changesetData.toString('base64'),
+      version_type: 'changeset',
+      version: this.localVersion,
+    };
+
+    try {
+      const resp = await this.httpPostJSON(url, body, this.config.sync.api_key);
+      if (resp.status === 200 && resp.data) {
+        if (resp.data.version !== undefined) {
+          this.localVersion = resp.data.version;
+        }
+        return { success: true, version: this.localVersion };
+      }
+      if (resp.status === 409) {
+        return { success: false, error: 'conflict', version: resp.data?.remote_version };
+      }
+      return { success: false, error: `http_${resp.status}` };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('429')) {
+        const match = msg.match(/retry_after[=:](\d+)/i);
+        const retryAfter = match ? parseInt(match[1], 10) * 1000 : 30000;
+        await new Promise((resolve) => setTimeout(resolve, retryAfter));
+        try {
+          const retryResp = await this.httpPostJSON(url, body, this.config.sync.api_key);
+          if (retryResp.status === 200 && retryResp.data) {
+            if (retryResp.data.version !== undefined) {
+              this.localVersion = retryResp.data.version;
+            }
+            return { success: true, version: this.localVersion };
+          }
+          return { success: false, error: `retry_http_${retryResp.status}` };
+        } catch (retryErr: unknown) {
+          return { success: false, error: `retry_${retryErr instanceof Error ? retryErr.message : String(retryErr)}` };
+        }
+      }
+      return { success: false, error: msg };
+    }
+  }
+
+  async pushFullDatabase(): Promise<PushResult> {
+    const dbPath = this.config.database_path.replace(/^~/, process.env.HOME || '~');
+    if (!fs.existsSync(dbPath)) {
+      return { success: false, error: 'database_file_not_found' };
+    }
+
+    const fileData = fs.readFileSync(dbPath);
+    const maxBytes = this.config.sync.max_file_size_mb * 1024 * 1024;
+    if (fileData.length > maxBytes) {
+      return { success: false, error: `database_exceeds_max_size_${this.config.sync.max_file_size_mb}MB` };
+    }
+
+    const baseUrl = this.config.sync.gateway_url.replace(/\/+$/, '');
+    const url = `${baseUrl}/upload`;
+    const body = {
+      database_name: path.basename(this.config.database_path),
+      file_data: fileData.toString('base64'),
+      version_type: 'full',
+      version: this.localVersion,
+    };
+
+    try {
+      const resp = await this.httpPostJSON(url, body, this.config.sync.api_key);
+      if (resp.status === 200 && resp.data) {
+        if (resp.data.version !== undefined) {
+          this.localVersion = resp.data.version;
+        }
+        return { success: true, version: this.localVersion };
+      }
+      if (resp.status === 409) {
+        return { success: false, error: 'conflict', version: resp.data?.remote_version };
+      }
+      return { success: false, error: `http_${resp.status}` };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('429')) {
+        const match = msg.match(/retry_after[=:](\d+)/i);
+        const retryAfter = match ? parseInt(match[1], 10) * 1000 : 30000;
+        await new Promise((resolve) => setTimeout(resolve, retryAfter));
+        try {
+          const retryResp = await this.httpPostJSON(url, body, this.config.sync.api_key);
+          if (retryResp.status === 200 && retryResp.data) {
+            if (retryResp.data.version !== undefined) {
+              this.localVersion = retryResp.data.version;
+            }
+            return { success: true, version: this.localVersion };
+          }
+          return { success: false, error: `retry_http_${retryResp.status}` };
+        } catch (retryErr: unknown) {
+          return { success: false, error: `retry_${retryErr instanceof Error ? retryErr.message : String(retryErr)}` };
+        }
+      }
+      return { success: false, error: msg };
+    }
+  }
+
+  startAutoSync(onSync?: (result: { pushed: boolean; pulled: boolean }) => void): void {
+    if (this.autoSyncTimer) return;
+
+    const intervalMs = (this.config.sync.trigger_timer_seconds || 30) * 1000;
+    const threshold = this.config.sync.trigger_ops_threshold || 50;
+
+    this.autoSyncTimer = setInterval(async () => {
+      if (this.autoSyncRunning) return;
+      this.autoSyncRunning = true;
+
+      try {
+        let pushed = false;
+        let pulled = false;
+
+        // Push phase: check for pending changes (caller provides changeset externally in CLI flow,
+        // but for background auto-sync we check the change-tracker via a callback pattern)
+        // For now, auto-sync only pulls unless explicitly told to push.
+        const pullResult = await this.syncNow();
+        if (pullResult.success) {
+          pulled = true;
+        }
+
+        if (onSync) {
+          onSync({ pushed, pulled });
+        }
+      } finally {
+        this.autoSyncRunning = false;
+      }
+    }, intervalMs);
+  }
+
+  stopAutoSync(): void {
+    if (this.autoSyncTimer) {
+      clearInterval(this.autoSyncTimer);
+      this.autoSyncTimer = null;
+    }
+    this.autoSyncRunning = false;
+  }
+
+  get isAutoSyncRunning(): boolean {
+    return this.autoSyncTimer !== null;
+  }
+
   resetSyncRetry(): void {
     this.syncRetry.reset();
   }
@@ -217,7 +373,7 @@ export class SyncManager {
     });
   }
 
-  private httpGetJSON(url: string, apiKey: string): Promise<unknown> {
+  httpGetJSON(url: string, apiKey: string): Promise<unknown> {
     return new Promise((resolve, reject) => {
       const parsed = new URL(url);
       const transport = parsed.protocol === 'https:' ? https : http;
@@ -247,6 +403,52 @@ export class SyncManager {
         req.destroy();
         reject(new Error('Request timed out'));
       });
+    });
+  }
+
+  httpPostJSON(url: string, body: Record<string, any>, apiKey: string): Promise<{ status: number; data: any }> {
+    return new Promise((resolve, reject) => {
+      const parsed = new URL(url);
+      const transport = parsed.protocol === 'https:' ? https : http;
+      const payload = JSON.stringify(body);
+      const req = transport.request(url, {
+        method: 'POST',
+        headers: {
+          'X-API-Key': apiKey,
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(payload),
+        },
+        timeout: 60_000,
+      }, (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => chunks.push(chunk));
+        res.on('end', () => {
+          const raw = Buffer.concat(chunks).toString('utf-8');
+          let data: any;
+          try {
+            data = JSON.parse(raw);
+          } catch {
+            data = null;
+          }
+          if (res.statusCode && res.statusCode >= 400) {
+            const errMsg = data?.error || data?.message || `HTTP ${res.statusCode}`;
+            const err = new Error(errMsg);
+            (err as any).status = res.statusCode;
+            (err as any).retryAfter = res.headers?.['retry-after'];
+            reject(err);
+            return;
+          }
+          resolve({ status: res.statusCode || 200, data });
+        });
+        res.on('error', reject);
+      });
+      req.on('error', reject);
+      req.on('timeout', () => {
+        req.destroy();
+        reject(new Error('Request timed out'));
+      });
+      req.write(payload);
+      req.end();
     });
   }
 }

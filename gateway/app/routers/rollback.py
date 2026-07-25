@@ -1,3 +1,4 @@
+import hashlib
 import uuid
 from datetime import datetime, timezone
 
@@ -6,15 +7,20 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user
+from app.config import settings
 from app.database import get_db
-from app.models import DatabaseVersion, SyncLog, UserChannel
+from app.models import DatabaseVersion, SyncLog, UserChannel, VersionHistory
 from app.services.telegram import TelegramClient, TelegramPermanentError
 
 router = APIRouter()
 
 
 def _get_tg_client(user: UserChannel) -> TelegramClient:
-    return TelegramClient(bot_token=user.bot_token_id)
+    return TelegramClient(
+        bot_token=settings.telegram_bot_token,
+        api_id=settings.telegram_api_id,
+        api_hash=settings.telegram_api_hash,
+    )
 
 
 @router.post("/rollback")
@@ -33,6 +39,17 @@ async def rollback(
     target_version = int(target_version)
 
     result = await db.execute(
+        select(VersionHistory).where(
+            VersionHistory.user_id == user.user_id,
+            VersionHistory.database_name == database_name,
+            VersionHistory.version == target_version,
+        )
+    )
+    history_entry = result.scalar_one_or_none()
+    if not history_entry:
+        raise HTTPException(status_code=404, detail="Target version not found in history")
+
+    result = await db.execute(
         select(DatabaseVersion).where(
             DatabaseVersion.user_id == user.user_id,
             DatabaseVersion.database_name == database_name,
@@ -42,10 +59,7 @@ async def rollback(
     if not db_version:
         raise HTTPException(status_code=404, detail="Database not found")
 
-    if target_version != db_version.latest_version:
-        raise HTTPException(status_code=404, detail="Target version not found")
-
-    source_message_id = db_version.latest_message_id
+    source_message_id = history_entry.message_id
     rollback_request_id = str(uuid.uuid4())
 
     log_entry = SyncLog(
@@ -80,6 +94,7 @@ async def rollback(
         raise HTTPException(status_code=500, detail="Internal rollback error")
 
     new_version = db_version.latest_version + 1
+    file_hash = hashlib.sha256(file_bytes).hexdigest()
     caption = {
         "database_name": database_name,
         "version": new_version,
@@ -110,7 +125,20 @@ async def rollback(
 
     db_version.latest_message_id = new_message_id
     db_version.latest_version = new_version
+    db_version.file_hash = file_hash
     db_version.uploaded_at = datetime.now(timezone.utc)
+
+    new_history = VersionHistory(
+        user_id=user.user_id,
+        database_name=database_name,
+        version=new_version,
+        message_id=new_message_id,
+        file_hash=file_hash,
+        file_size=len(file_bytes),
+        version_type="full",
+        uploaded_at=datetime.now(timezone.utc),
+    )
+    db.add(new_history)
 
     log_entry.status = "completed"
     log_entry.telegram_message_id = new_message_id
