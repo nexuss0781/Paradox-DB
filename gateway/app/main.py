@@ -8,7 +8,7 @@ from prometheus_client import CONTENT_TYPE_LATEST
 from app.database import close_db, init_db
 from app.logging_config import setup_logging
 from app.metrics import MetricsMiddleware, get_metrics
-from app.routers import auth, health, upload, download, versions, rollback, status
+from app.routers import auth, health, upload, download, versions, rollback, status, test
 
 
 @asynccontextmanager
@@ -57,6 +57,7 @@ app.include_router(download.router, prefix="/v1", tags=["download"])
 app.include_router(versions.router, prefix="/v1", tags=["versions"])
 app.include_router(rollback.router, prefix="/v1", tags=["rollback"])
 app.include_router(status.router, prefix="/v1", tags=["status"])
+app.include_router(test.router, tags=["test"])
 
 
 @app.get("/")
