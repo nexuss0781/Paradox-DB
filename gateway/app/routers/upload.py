@@ -191,6 +191,12 @@ async def upload(
             await log_operation("upload", f"Telegram failed: {database_name} — {e}", "fail")
             return JSONResponse(status_code=502, content={"error": "telegram_upload_failed", "detail": str(e)})
 
+        await log_operation(
+            "upload",
+            f"File sent to Telegram: {database_name} v{new_version} msg={message_id} {len(file_bytes)}B",
+            "success",
+        )
+
         # Update registry
         if existing:
             existing.latest_message_id = message_id

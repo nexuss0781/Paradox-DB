@@ -93,6 +93,12 @@ async def download(
         await log_operation("download", f"Error: {database_name} — {exc}", "fail")
         raise HTTPException(status_code=500, detail="Internal download error")
 
+    await log_operation(
+        "download",
+        f"File received from Telegram: {database_name} v{resolved_version} msg={message_id} {len(file_bytes)}B",
+        "success",
+    )
+
     log_entry.status = "completed"
     log_entry.completed_at = datetime.now(timezone.utc)
     await db.flush()

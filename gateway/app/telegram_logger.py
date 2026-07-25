@@ -4,10 +4,13 @@ Sends structured logs to the configured storage channel for every
 database operation: register, upload, download, versions, rollback, status.
 """
 
+import logging
 from datetime import datetime, timezone
 
 from app.config import settings
 from app.services.telegram import TelegramClient, TelegramPermanentError
+
+logger = logging.getLogger("gateway.telegram_logger")
 
 _CHANNEL_ID: str = ""
 _CHANNEL_NAME: str = ""
@@ -39,7 +42,8 @@ async def _resolve_channel() -> tuple[str, str]:
                     or data.get("username")
                     or str(data.get("id", "unknown"))
                 )
-    except Exception:
+    except Exception as e:
+        logger.warning("Failed to resolve channel name: %s", e)
         _CHANNEL_NAME = "unknown"
 
     _RESOLVED = True
@@ -61,6 +65,7 @@ async def log_operation(action: str, log: str, status: str = "info") -> None:
     """
     channel_id, channel_name = await _resolve_channel()
     if not channel_id:
+        logger.debug("No storage chat ID configured, skipping log")
         return
 
     status_icon = {
@@ -84,6 +89,9 @@ async def log_operation(action: str, log: str, status: str = "info") -> None:
             api_id=settings.telegram_api_id,
             api_hash=settings.telegram_api_hash,
         )
-        await tg.send_message(channel_id, msg)
-    except (TelegramPermanentError, Exception):
-        pass
+        result = await tg.send_message(channel_id, msg)
+        logger.info("Logged [%s] to channel %s: msg_id=%s", action, channel_id, result)
+    except TelegramPermanentError as e:
+        logger.error("Telegram log failed [%s]: %s", action, e)
+    except Exception as e:
+        logger.error("Log send failed [%s]: %s", action, e)
