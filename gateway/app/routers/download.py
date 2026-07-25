@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
@@ -67,7 +67,7 @@ async def download(
         operation="download",
         telegram_message_id=message_id,
         status="in_progress",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.utcnow(),
     )
     db.add(log_entry)
     await db.flush()
@@ -81,14 +81,14 @@ async def download(
     except TelegramPermanentError as exc:
         log_entry.status = "failed"
         log_entry.error_message = str(exc)
-        log_entry.completed_at = datetime.now(timezone.utc)
+        log_entry.completed_at = datetime.utcnow()
         await db.flush()
         await log_operation("download", f"Telegram failed: {database_name} v{resolved_version} — {exc}", "fail")
         raise HTTPException(status_code=502, detail=f"Telegram download failed: {exc}")
     except Exception as exc:
         log_entry.status = "failed"
         log_entry.error_message = str(exc)
-        log_entry.completed_at = datetime.now(timezone.utc)
+        log_entry.completed_at = datetime.utcnow()
         await db.flush()
         await log_operation("download", f"Error: {database_name} — {exc}", "fail")
         raise HTTPException(status_code=500, detail="Internal download error")
@@ -100,7 +100,7 @@ async def download(
     )
 
     log_entry.status = "completed"
-    log_entry.completed_at = datetime.now(timezone.utc)
+    log_entry.completed_at = datetime.utcnow()
     await db.flush()
 
     await log_operation(

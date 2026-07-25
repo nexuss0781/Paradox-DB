@@ -1,6 +1,6 @@
 import hashlib
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
@@ -73,7 +73,7 @@ async def rollback(
         operation="rollback",
         telegram_message_id=source_message_id,
         status="in_progress",
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.utcnow(),
     )
     db.add(log_entry)
     await db.flush()
@@ -87,14 +87,14 @@ async def rollback(
     except TelegramPermanentError as exc:
         log_entry.status = "failed"
         log_entry.error_message = str(exc)
-        log_entry.completed_at = datetime.now(timezone.utc)
+        log_entry.completed_at = datetime.utcnow()
         await db.flush()
         await log_operation("rollback", f"Telegram download failed: {database_name} — {exc}", "fail")
         raise HTTPException(status_code=502, detail=f"Telegram download failed: {exc}")
     except Exception as exc:
         log_entry.status = "failed"
         log_entry.error_message = str(exc)
-        log_entry.completed_at = datetime.now(timezone.utc)
+        log_entry.completed_at = datetime.utcnow()
         await db.flush()
         await log_operation("rollback", f"Download error: {database_name} — {exc}", "fail")
         raise HTTPException(status_code=500, detail="Internal rollback error")
@@ -107,7 +107,7 @@ async def rollback(
         "user_id": user.user_id,
         "operation": "rollback",
         "rolled_back_to": target_version,
-        "uploaded_at": datetime.now(timezone.utc).isoformat(),
+        "uploaded_at": datetime.utcnow().isoformat(),
     }
 
     try:
@@ -119,14 +119,14 @@ async def rollback(
     except TelegramPermanentError as exc:
         log_entry.status = "failed"
         log_entry.error_message = f"Re-upload failed: {exc}"
-        log_entry.completed_at = datetime.now(timezone.utc)
+        log_entry.completed_at = datetime.utcnow()
         await db.flush()
         await log_operation("rollback", f"Re-upload failed: {database_name} — {exc}", "fail")
         raise HTTPException(status_code=502, detail=f"Telegram re-upload failed: {exc}")
     except Exception as exc:
         log_entry.status = "failed"
         log_entry.error_message = f"Re-upload failed: {exc}"
-        log_entry.completed_at = datetime.now(timezone.utc)
+        log_entry.completed_at = datetime.utcnow()
         await db.flush()
         await log_operation("rollback", f"Re-upload error: {database_name} — {exc}", "fail")
         raise HTTPException(status_code=500, detail="Internal rollback error")
@@ -134,7 +134,7 @@ async def rollback(
     db_version.latest_message_id = new_message_id
     db_version.latest_version = new_version
     db_version.file_hash = file_hash
-    db_version.uploaded_at = datetime.now(timezone.utc)
+    db_version.uploaded_at = datetime.utcnow()
 
     new_history = VersionHistory(
         user_id=user.user_id,
@@ -144,13 +144,13 @@ async def rollback(
         file_hash=file_hash,
         file_size=len(file_bytes),
         version_type="full",
-        uploaded_at=datetime.now(timezone.utc),
+        uploaded_at=datetime.utcnow(),
     )
     db.add(new_history)
 
     log_entry.status = "completed"
     log_entry.telegram_message_id = new_message_id
-    log_entry.completed_at = datetime.now(timezone.utc)
+    log_entry.completed_at = datetime.utcnow()
     await db.flush()
 
     await log_operation(

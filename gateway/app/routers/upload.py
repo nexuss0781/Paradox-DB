@@ -1,7 +1,9 @@
 import hashlib
 import logging
+import time
 import uuid
-from datetime import datetime, timezone
+import base64
+from datetime import datetime
 
 import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -21,10 +23,6 @@ from app.metrics import (
 from app.models import DatabaseVersion, SyncLog, UserChannel, VersionHistory
 from app.services.telegram import TelegramClient, TelegramRateLimitError
 from app.telegram_logger import log_operation
-
-import time
-import os
-import httpx
 
 logger = logging.getLogger("gateway.upload")
 
@@ -62,6 +60,7 @@ async def upload(
 ):
     sync_uploads_total.inc()
     start = time.time()
+    uid = user.user_id
 
     try:
         body = await request.json()
@@ -76,7 +75,7 @@ async def upload(
 
     if not database_name:
         try:
-            await log_operation("upload", f"Missing database_name from user {user.user_id}", "fail")
+            await log_operation("upload", f"Missing database_name from user {uid}", "fail")
         except Exception:
             pass
         return JSONResponse(status_code=400, content={"error": "missing database_name"})
@@ -88,14 +87,12 @@ async def upload(
             pass
         return JSONResponse(status_code=400, content={"error": "missing file_data or changeset_data"})
 
-    import base64
-
     if changeset_data_b64:
         try:
             file_bytes = base64.b64decode(changeset_data_b64)
         except Exception:
             try:
-                await log_operation("upload", f"Invalid base64 changeset from user {user.user_id}: {database_name}", "fail")
+                await log_operation("upload", f"Invalid base64 changeset from user {uid}: {database_name}", "fail")
             except Exception:
                 pass
             return JSONResponse(status_code=400, content={"error": "invalid base64 in changeset_data"})
@@ -104,14 +101,14 @@ async def upload(
             file_bytes = base64.b64decode(file_data_b64)
         except Exception:
             try:
-                await log_operation("upload", f"Invalid base64 file_data from user {user.user_id}: {database_name}", "fail")
+                await log_operation("upload", f"Invalid base64 file_data from user {uid}: {database_name}", "fail")
             except Exception:
                 pass
             return JSONResponse(status_code=400, content={"error": "invalid base64 in file_data"})
 
-    if not rate_limiter.check(user.user_id):
+    if not rate_limiter.check(uid):
         try:
-            await log_operation("upload", f"Rate limited: user {user.user_id}", "warn")
+            await log_operation("upload", f"Rate limited: user {uid}", "warn")
         except Exception:
             pass
         return JSONResponse(
@@ -119,7 +116,7 @@ async def upload(
             content={"error": "rate_limited", "retry_after_seconds": 60, "queue_depth": 0},
         )
 
-    lock_key = f"{user.user_id}:{database_name}"
+    lock_key = f"{uid}:{database_name}"
     try:
         acquired = await _upload_lock.acquire(lock_key, timeout=settings.lock_timeout_seconds)
     except Exception as e:
@@ -142,10 +139,9 @@ async def upload(
         )
 
     try:
-        # Check version conflict
         result = await db.execute(
             select(DatabaseVersion).where(
-                DatabaseVersion.user_id == user.user_id,
+                DatabaseVersion.user_id == uid,
                 DatabaseVersion.database_name == database_name,
             )
         )
@@ -172,10 +168,9 @@ async def upload(
         file_hash = hashlib.sha256(file_bytes).hexdigest()
         request_id = str(uuid.uuid4())
 
-        # Log pending
         log_entry = SyncLog(
             request_id=request_id,
-            user_id=user.user_id,
+            user_id=uid,
             database_name=database_name,
             operation="upload",
             status="pending",
@@ -183,7 +178,6 @@ async def upload(
         db.add(log_entry)
         await db.flush()
 
-        # Upload to Telegram
         tg_client = TelegramClient(
             bot_token=settings.telegram_bot_token,
             api_id=settings.telegram_api_id,
@@ -194,9 +188,9 @@ async def upload(
             "db_name": database_name,
             "version": new_version,
             "type": version_type,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.utcnow().isoformat(),
             "hash": file_hash,
-            "user_id": user.user_id,
+            "user_id": uid,
         }
 
         try:
@@ -205,9 +199,18 @@ async def upload(
             sync_uploads_failed.inc()
             log_entry.status = "failed"
             log_entry.error_message = f"Telegram rate limit: retry_after={e.retry_after}"
-            log_entry.completed_at = datetime.now(timezone.utc)
-            await db.commit()
-            await log_operation("upload", f"Telegram rate limit: {database_name}", "fail")
+            log_entry.completed_at = datetime.utcnow()
+            try:
+                await db.commit()
+            except Exception:
+                try:
+                    await db.rollback()
+                except Exception:
+                    pass
+            try:
+                await log_operation("upload", f"Telegram rate limit: {database_name}", "fail")
+            except Exception:
+                pass
             return JSONResponse(
                 status_code=429,
                 content={"error": "rate_limited", "retry_after_seconds": e.retry_after, "queue_depth": 1},
@@ -215,10 +218,19 @@ async def upload(
         except Exception as e:
             sync_uploads_failed.inc()
             log_entry.status = "failed"
-            log_entry.error_message = str(e)
-            log_entry.completed_at = datetime.now(timezone.utc)
-            await db.commit()
-            await log_operation("upload", f"Telegram failed: {database_name} — {e}", "fail")
+            log_entry.error_message = str(e)[:500]
+            log_entry.completed_at = datetime.utcnow()
+            try:
+                await db.commit()
+            except Exception:
+                try:
+                    await db.rollback()
+                except Exception:
+                    pass
+            try:
+                await log_operation("upload", f"Telegram failed: {database_name} — {e}", "fail")
+            except Exception:
+                pass
             return JSONResponse(status_code=502, content={"error": "telegram_upload_failed", "detail": str(e)})
 
         await log_operation(
@@ -227,15 +239,14 @@ async def upload(
             "success",
         )
 
-        # Update registry
         if existing:
             existing.latest_message_id = message_id
             existing.latest_version = new_version
             existing.file_hash = file_hash
-            existing.uploaded_at = datetime.now(timezone.utc)
+            existing.uploaded_at = datetime.utcnow()
         else:
             new_entry = DatabaseVersion(
-                user_id=user.user_id,
+                user_id=uid,
                 database_name=database_name,
                 latest_message_id=message_id,
                 latest_version=new_version,
@@ -244,20 +255,20 @@ async def upload(
             db.add(new_entry)
 
         history_entry = VersionHistory(
-            user_id=user.user_id,
+            user_id=uid,
             database_name=database_name,
             version=new_version,
             message_id=message_id,
             file_hash=file_hash,
             file_size=len(file_bytes),
             version_type=version_type if version_type != "auto" else "full",
-            uploaded_at=datetime.now(timezone.utc),
+            uploaded_at=datetime.utcnow(),
         )
         db.add(history_entry)
 
         log_entry.telegram_message_id = message_id
         log_entry.status = "success"
-        log_entry.completed_at = datetime.now(timezone.utc)
+        log_entry.completed_at = datetime.utcnow()
         await db.commit()
 
         duration_ms = (time.time() - start) * 1000
@@ -266,7 +277,7 @@ async def upload(
 
         await log_operation(
             "upload",
-            f"{database_name} v{new_version} msg={message_id} user={user.user_id} {len(file_bytes)}B {duration_ms:.0f}ms",
+            f"{database_name} v{new_version} msg={message_id} user={uid} {len(file_bytes)}B {duration_ms:.0f}ms",
             "success",
         )
 
@@ -274,13 +285,19 @@ async def upload(
             "request_id": request_id,
             "message_id": message_id,
             "version": new_version,
-            "uploaded_at": datetime.now(timezone.utc).isoformat(),
+            "uploaded_at": datetime.utcnow().isoformat(),
         }
 
     except Exception as e:
         sync_uploads_failed.inc()
-        await db.rollback()
-        await log_operation("upload", f"Internal error: {database_name} user={user.user_id} — {e}", "fail")
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+        try:
+            await log_operation("upload", f"Internal error: {database_name} user={uid} — {e}", "fail")
+        except Exception:
+            pass
         return JSONResponse(status_code=500, content={"error": "internal_error", "detail": str(e)})
     finally:
         try:
