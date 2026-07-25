@@ -326,36 +326,13 @@ async def _run_test():
     s["duration_ms"] = round((time.time() - t0) * 1000, 1)
     results.append(s)
 
-    # ── 10. Send results to Telegram channel ─────────────────────────
+    # Pre-compute summary for logging
     total_ms = round((time.time() - start_all) * 1000, 1)
     passed = sum(1 for r in results if r["status"] == "pass")
     failed = sum(1 for r in results if r["status"] == "fail")
     skipped = sum(1 for r in results if r["status"] == "skip")
 
-    status_icons = {"pass": "✅", "fail": "❌", "skip": "⏭️", "pending": "⏳"}
-    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-
-    lines = [
-        f"📋 Paradox-DB E2E Test Report",
-        f"🕐 {now_str}",
-        f"{'━' * 30}",
-    ]
-    for r in results:
-        icon = status_icons.get(r["status"], "?")
-        line = f"{icon} {r['name']}  {r['duration_ms']}ms"
-        if r["error"]:
-            line += f"\n   ↳ {r['error'][:120]}"
-        lines.append(line)
-
-    lines.extend([
-        f"{'━' * 30}",
-        f"Total: {passed}/{len(results)} passed",
-        f"Duration: {total_ms}ms",
-        f"Overall: {'✅ PASS' if failed == 0 else '❌ FAIL'}",
-    ])
-
-    log_text = "\n".join(lines)
-
+    # ── 10. Send each log to Telegram channel ────────────────────────
     s = _step("send_to_channel")
     t0 = time.time()
     try:
@@ -368,7 +345,59 @@ async def _run_test():
                 api_id=settings.telegram_api_id,
                 api_hash=settings.telegram_api_hash,
             )
-            await tg.send_message(_TEST_CHANNEL_ID, log_text)
+
+            # Resolve channel name
+            channel_name = "unknown"
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.post(
+                        f"https://api.telegram.org/bot{settings.telegram_bot_token}/getChat",
+                        json={"chat_id": _TEST_CHANNEL_ID},
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json().get("result", {})
+                        channel_name = data.get("title") or data.get("username") or str(data.get("id", "unknown"))
+            except Exception:
+                pass
+
+            now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+            # Send header
+            await tg.send_message(
+                _TEST_CHANNEL_ID,
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📋 E2E Test Run — {now_str}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            )
+
+            # Send each step as individual log
+            status_icons = {"pass": "✅", "fail": "❌", "skip": "⏭️", "pending": "⏳"}
+            for r in results:
+                icon = status_icons.get(r["status"], "?")
+                action = r["name"]
+                log_detail = f"{icon} {r['status'].upper()} — {r['duration_ms']}ms"
+                if r["error"]:
+                    log_detail += f"\nError: {r['error'][:200]}"
+
+                msg = (
+                    f"#Main_Channel_name: {channel_name}\n"
+                    f"#Main_id: {_TEST_CHANNEL_ID}\n"
+                    f"#action: {action}\n"
+                    f"#log: {log_detail}"
+                )
+                await tg.send_message(_TEST_CHANNEL_ID, msg)
+
+            # Send summary
+            await tg.send_message(
+                _TEST_CHANNEL_ID,
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"#Main_Channel_name: {channel_name}\n"
+                f"#Main_id: {_TEST_CHANNEL_ID}\n"
+                f"#action: summary\n"
+                f"#log: {passed}/{len(results)} passed | {total_ms}ms | {'PASS' if failed == 0 else 'FAIL'}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            )
+
             s["status"] = "pass"
     except Exception as e:
         s["status"] = "fail"
