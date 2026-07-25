@@ -9,6 +9,7 @@ from app.database import close_db, init_db
 from app.logging_config import setup_logging
 from app.metrics import MetricsMiddleware, get_metrics
 from app.routers import auth, health, upload, download, versions, rollback, status, test
+from app.telegram_logger import log_operation
 
 
 @asynccontextmanager
@@ -62,4 +63,5 @@ app.include_router(test.router, tags=["test"])
 
 @app.get("/")
 async def root():
+    await log_operation("gateway", "Gateway info requested", "info")
     return {"service": "paradox-db-gateway", "version": "1.0.0"}

@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .config import settings
 from .database import get_db
+from .telegram_logger import log_operation
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -67,6 +68,8 @@ async def get_current_user(
         user_id = payload.get("sub")
 
     if not user_id:
+        ip = request.client.host if request.client else "unknown"
+        await log_operation("auth", f"Missing/invalid auth from {ip}", "fail")
         raise HTTPException(status_code=401, detail="Missing or invalid authentication")
 
     result = await db.execute(
@@ -74,6 +77,7 @@ async def get_current_user(
     )
     user = result.scalar_one_or_none()
     if not user:
+        await log_operation("auth", f"User not found: {user_id}", "fail")
         raise HTTPException(status_code=401, detail="User not found")
 
     request.state.user_id = user_id
