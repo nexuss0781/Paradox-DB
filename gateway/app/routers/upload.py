@@ -75,11 +75,17 @@ async def upload(
     client_version = body.get("version")
 
     if not database_name:
-        await log_operation("upload", f"Missing database_name from user {user.user_id}", "fail")
+        try:
+            await log_operation("upload", f"Missing database_name from user {user.user_id}", "fail")
+        except Exception:
+            pass
         return JSONResponse(status_code=400, content={"error": "missing database_name"})
 
     if not file_data_b64 and not changeset_data_b64:
-        await log_operation("upload", f"Missing file_data for {database_name}", "fail")
+        try:
+            await log_operation("upload", f"Missing file_data for {database_name}", "fail")
+        except Exception:
+            pass
         return JSONResponse(status_code=400, content={"error": "missing file_data or changeset_data"})
 
     import base64
@@ -88,17 +94,26 @@ async def upload(
         try:
             file_bytes = base64.b64decode(changeset_data_b64)
         except Exception:
-            await log_operation("upload", f"Invalid base64 changeset from user {user.user_id}: {database_name}", "fail")
+            try:
+                await log_operation("upload", f"Invalid base64 changeset from user {user.user_id}: {database_name}", "fail")
+            except Exception:
+                pass
             return JSONResponse(status_code=400, content={"error": "invalid base64 in changeset_data"})
     else:
         try:
             file_bytes = base64.b64decode(file_data_b64)
         except Exception:
-            await log_operation("upload", f"Invalid base64 file_data from user {user.user_id}: {database_name}", "fail")
+            try:
+                await log_operation("upload", f"Invalid base64 file_data from user {user.user_id}: {database_name}", "fail")
+            except Exception:
+                pass
             return JSONResponse(status_code=400, content={"error": "invalid base64 in file_data"})
 
     if not rate_limiter.check(user.user_id):
-        await log_operation("upload", f"Rate limited: user {user.user_id}", "warn")
+        try:
+            await log_operation("upload", f"Rate limited: user {user.user_id}", "warn")
+        except Exception:
+            pass
         return JSONResponse(
             status_code=429,
             content={"error": "rate_limited", "retry_after_seconds": 60, "queue_depth": 0},
@@ -108,13 +123,19 @@ async def upload(
     try:
         acquired = await _upload_lock.acquire(lock_key, timeout=settings.lock_timeout_seconds)
     except Exception as e:
-        await log_operation("upload", f"Lock error: {database_name} — {e}", "fail")
+        try:
+            await log_operation("upload", f"Lock error: {database_name} — {e}", "fail")
+        except Exception:
+            pass
         return JSONResponse(
             status_code=503,
             content={"error": "lock_error", "detail": str(e)},
         )
     if not acquired:
-        await log_operation("upload", f"Lock timeout: {database_name}", "warn")
+        try:
+            await log_operation("upload", f"Lock timeout: {database_name}", "warn")
+        except Exception:
+            pass
         return JSONResponse(
             status_code=503,
             content={"error": "lock_timeout", "detail": "Another upload is in progress"},
@@ -262,4 +283,7 @@ async def upload(
         await log_operation("upload", f"Internal error: {database_name} user={user.user_id} — {e}", "fail")
         return JSONResponse(status_code=500, content={"error": "internal_error", "detail": str(e)})
     finally:
-        await _upload_lock.release(lock_key)
+        try:
+            await _upload_lock.release(lock_key)
+        except Exception:
+            pass
