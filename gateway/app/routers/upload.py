@@ -105,7 +105,14 @@ async def upload(
         )
 
     lock_key = f"{user.user_id}:{database_name}"
-    acquired = await _upload_lock.acquire(lock_key, timeout=settings.lock_timeout_seconds)
+    try:
+        acquired = await _upload_lock.acquire(lock_key, timeout=settings.lock_timeout_seconds)
+    except Exception as e:
+        await log_operation("upload", f"Lock error: {database_name} — {e}", "fail")
+        return JSONResponse(
+            status_code=503,
+            content={"error": "lock_error", "detail": str(e)},
+        )
     if not acquired:
         await log_operation("upload", f"Lock timeout: {database_name}", "warn")
         return JSONResponse(
