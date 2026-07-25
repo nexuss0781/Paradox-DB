@@ -1,8 +1,10 @@
 import uuid
+import traceback
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from prometheus_client import CONTENT_TYPE_LATEST
 
 from app.database import close_db, init_db
@@ -36,6 +38,24 @@ app.add_middleware(
 )
 
 app.add_middleware(MetricsMiddleware)
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    tb = traceback.format_exc()
+    route = getattr(request, "url", "unknown")
+    try:
+        await log_operation(
+            "gateway",
+            f"Unhandled exception on {request.method} {route}: {type(exc).__name__}: {exc}\n{tb}",
+            "fail",
+        )
+    except Exception:
+        pass
+    return JSONResponse(
+        status_code=500,
+        content={"error": "internal_error", "detail": f"{type(exc).__name__}: {exc}"},
+    )
 
 
 @app.middleware("http")
