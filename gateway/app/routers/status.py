@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth import get_current_user
 from app.database import get_db
 from app.models import DatabaseVersion, SyncLog, UserChannel
+from app.telegram_logger import log_operation
 
 router = APIRouter()
 
@@ -42,6 +43,12 @@ async def status(
             "pending_changesets": 0,
             "last_sync_at": last_sync.completed_at.isoformat() if last_sync and last_sync.completed_at else None,
         })
+
+    await log_operation(
+        "status",
+        f"user={user.user_id} databases={len(databases)}",
+        "success",
+    )
 
     return {
         "user_id": user.user_id,

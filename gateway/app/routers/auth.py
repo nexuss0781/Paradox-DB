@@ -8,6 +8,7 @@ from ..auth import generate_api_key, hash_api_key, create_jwt
 from ..config import settings
 from ..database import get_db
 from ..models import UserChannel
+from ..telegram_logger import log_operation
 
 router = APIRouter(prefix="/v1/auth", tags=["auth"])
 
@@ -22,6 +23,7 @@ async def register(db: AsyncSession = Depends(get_db)):
         select(UserChannel).where(UserChannel.user_id == user_id)
     )
     if result.scalar_one_or_none():
+        await log_operation("register", f"User already exists: {user_id}", "fail")
         raise HTTPException(status_code=409, detail="User already exists")
 
     user = UserChannel(
@@ -34,4 +36,5 @@ async def register(db: AsyncSession = Depends(get_db)):
     await db.commit()
 
     jwt_token = create_jwt(user_id)
+    await log_operation("register", f"New user: {user_id}", "success")
     return {"user_id": user_id, "api_key": api_key, "jwt": jwt_token}

@@ -20,6 +20,7 @@ from app.metrics import (
 )
 from app.models import DatabaseVersion, SyncLog, UserChannel, VersionHistory
 from app.services.telegram import TelegramClient, TelegramRateLimitError
+from app.telegram_logger import log_operation
 
 import time
 import os
@@ -74,9 +75,11 @@ async def upload(
     client_version = body.get("version")
 
     if not database_name:
+        await log_operation("upload", f"Missing database_name from user {user.user_id}", "fail")
         return JSONResponse(status_code=400, content={"error": "missing database_name"})
 
     if not file_data_b64 and not changeset_data_b64:
+        await log_operation("upload", f"Missing file_data for {database_name}", "fail")
         return JSONResponse(status_code=400, content={"error": "missing file_data or changeset_data"})
 
     import base64
@@ -93,6 +96,7 @@ async def upload(
             return JSONResponse(status_code=400, content={"error": "invalid base64 in file_data"})
 
     if not rate_limiter.check(user.user_id):
+        await log_operation("upload", f"Rate limited: user {user.user_id}", "warn")
         return JSONResponse(
             status_code=429,
             content={"error": "rate_limited", "retry_after_seconds": 60, "queue_depth": 0},
@@ -101,6 +105,7 @@ async def upload(
     lock_key = f"{user.user_id}:{database_name}"
     acquired = await _upload_lock.acquire(lock_key, timeout=settings.lock_timeout_seconds)
     if not acquired:
+        await log_operation("upload", f"Lock timeout: {database_name}", "warn")
         return JSONResponse(
             status_code=503,
             content={"error": "lock_timeout", "detail": "Another upload is in progress"},
@@ -117,6 +122,11 @@ async def upload(
         existing = result.scalar_one_or_none()
 
         if existing and client_version is not None and client_version < existing.latest_version:
+            await log_operation(
+                "upload",
+                f"Conflict: {database_name} remote=v{existing.latest_version} client=v{client_version}",
+                "warn",
+            )
             return JSONResponse(
                 status_code=409,
                 content={
@@ -167,6 +177,7 @@ async def upload(
             log_entry.error_message = f"Telegram rate limit: retry_after={e.retry_after}"
             log_entry.completed_at = datetime.now(timezone.utc)
             await db.commit()
+            await log_operation("upload", f"Telegram rate limit: {database_name}", "fail")
             return JSONResponse(
                 status_code=429,
                 content={"error": "rate_limited", "retry_after_seconds": e.retry_after, "queue_depth": 1},
@@ -177,6 +188,7 @@ async def upload(
             log_entry.error_message = str(e)
             log_entry.completed_at = datetime.now(timezone.utc)
             await db.commit()
+            await log_operation("upload", f"Telegram failed: {database_name} — {e}", "fail")
             return JSONResponse(status_code=502, content={"error": "telegram_upload_failed", "detail": str(e)})
 
         # Update registry
@@ -215,6 +227,12 @@ async def upload(
         duration_ms = (time.time() - start) * 1000
         sync_upload_latency_ms.observe(duration_ms)
         sync_uploads_success.inc()
+
+        await log_operation(
+            "upload",
+            f"{database_name} v{new_version} msg={message_id} user={user.user_id} {len(file_bytes)}B {duration_ms:.0f}ms",
+            "success",
+        )
 
         return {
             "request_id": request_id,

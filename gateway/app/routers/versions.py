@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth import get_current_user
 from app.database import get_db
 from app.models import UserChannel, VersionHistory
+from app.telegram_logger import log_operation
 
 router = APIRouter()
 
@@ -22,6 +23,12 @@ async def versions(
         ).order_by(VersionHistory.version.desc())
     )
     rows = result.scalars().all()
+
+    await log_operation(
+        "versions",
+        f"{database_name} user={user.user_id} count={len(rows)}",
+        "success",
+    )
 
     return {
         "database_name": database_name,
