@@ -11,6 +11,7 @@ from app.config import settings
 from app.database import get_db
 from app.models import DatabaseVersion, SyncLog, UserChannel, VersionHistory
 from app.services.telegram import TelegramClient, TelegramPermanentError
+from app.telegram_logger import log_operation
 
 router = APIRouter()
 
@@ -41,6 +42,7 @@ async def download(
         )
         history_entry = result.scalar_one_or_none()
         if not history_entry:
+            await log_operation("download", f"Version {version} not found: {database_name}", "fail")
             raise HTTPException(status_code=404, detail="Version not found")
         message_id = history_entry.message_id
         resolved_version = history_entry.version
@@ -53,6 +55,7 @@ async def download(
         )
         db_version = result.scalar_one_or_none()
         if not db_version:
+            await log_operation("download", f"Not found: {database_name}", "fail")
             raise HTTPException(status_code=404, detail="Database not found")
         message_id = db_version.latest_message_id
         resolved_version = db_version.latest_version
@@ -80,17 +83,25 @@ async def download(
         log_entry.error_message = str(exc)
         log_entry.completed_at = datetime.now(timezone.utc)
         await db.flush()
+        await log_operation("download", f"Telegram failed: {database_name} v{resolved_version} — {exc}", "fail")
         raise HTTPException(status_code=502, detail=f"Telegram download failed: {exc}")
     except Exception as exc:
         log_entry.status = "failed"
         log_entry.error_message = str(exc)
         log_entry.completed_at = datetime.now(timezone.utc)
         await db.flush()
+        await log_operation("download", f"Error: {database_name} — {exc}", "fail")
         raise HTTPException(status_code=500, detail="Internal download error")
 
     log_entry.status = "completed"
     log_entry.completed_at = datetime.now(timezone.utc)
     await db.flush()
+
+    await log_operation(
+        "download",
+        f"{database_name} v{resolved_version} msg={message_id} user={user.user_id} {len(file_bytes)}B",
+        "success",
+    )
 
     return Response(
         content=file_bytes,
