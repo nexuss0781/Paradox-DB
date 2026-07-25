@@ -112,25 +112,40 @@ class TelegramClient:
                 )
             if resp.status_code != 200:
                 raise TelegramPermanentError(f"Upload failed: {resp.text}")
-            return str(resp.json()["result"]["message_id"])
+            result = resp.json()["result"]
+            file_id = ""
+            doc = result.get("document")
+            if doc:
+                file_id = doc.get("file_id", "")
+            self._last_file_id = file_id
+            return str(result["message_id"])
+
+    async def upload_file_with_file_id(
+        self, channel_id: str, file_bytes: bytes, caption: dict
+    ) -> tuple[str, str]:
+        """Upload and return (message_id, file_id)."""
+        message_id = await self.upload_file(channel_id, file_bytes, caption)
+        return message_id, getattr(self, "_last_file_id", "")
 
     async def download_file(self, channel_id: str, message_id: str) -> bytes:
         """Download a file from a channel message by message_id.
 
+        Uses forwardMessage to retrieve the message, then extracts the file.
         Returns raw file bytes.
         Raises TelegramPermanentError if the message or file cannot be resolved.
         """
         async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.post(
-                f"{self.base_url}/getMessage",
+                f"{self.base_url}/forwardMessage",
                 json={
                     "chat_id": channel_id,
+                    "from_chat_id": channel_id,
                     "message_id": int(message_id),
                 },
             )
             if resp.status_code != 200:
                 raise TelegramPermanentError(
-                    f"Message not found: {resp.text}"
+                    f"Forward failed: {resp.text}"
                 )
             result = resp.json().get("result", {})
             doc = result.get("document")
@@ -156,6 +171,24 @@ class TelegramClient:
             if resp3.status_code != 200:
                 raise TelegramPermanentError("Download failed")
             return resp3.content
+
+    async def download_file_by_id(self, file_id: str) -> bytes:
+        """Download a file directly by file_id (skip message lookup)."""
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(
+                f"{self.base_url}/getFile",
+                json={"file_id": file_id},
+            )
+            if resp.status_code != 200:
+                raise TelegramPermanentError(f"getFile failed: {resp.text}")
+            file_path = resp.json()["result"]["file_path"]
+
+            resp2 = await client.get(
+                f"https://api.telegram.org/file/bot{self.bot_token}/{file_path}"
+            )
+            if resp2.status_code != 200:
+                raise TelegramPermanentError("Download failed")
+            return resp2.content
 
     async def get_file_metadata(
         self, channel_id: str, message_id: str

@@ -136,6 +136,7 @@ async def _run_test():
     # ── 6. Telegram: Upload Test File ────────────────────────────────
     s = _step("telegram_upload")
     uploaded_message_id = None
+    uploaded_file_id = None
     t0 = time.time()
     try:
         if not _TEST_CHANNEL_ID:
@@ -155,11 +156,12 @@ async def _run_test():
                 "hash": hashlib.sha256(_TEST_FILE_CONTENT).hexdigest(),
                 "user_id": _TEST_USER_ID,
             }
-            uploaded_message_id = await tg.upload_file(
+            uploaded_message_id, uploaded_file_id = await tg.upload_file_with_file_id(
                 _TEST_CHANNEL_ID, _TEST_FILE_CONTENT, caption
             )
             s["status"] = "pass"
             s["message_id"] = uploaded_message_id
+            s["file_id"] = uploaded_file_id
     except Exception as e:
         s["status"] = "fail"
         s["error"] = str(e)
@@ -171,18 +173,16 @@ async def _run_test():
     t0 = time.time()
     downloaded_bytes = None
     try:
-        if not uploaded_message_id or not _TEST_CHANNEL_ID:
+        if not uploaded_file_id or not _TEST_CHANNEL_ID:
             s["status"] = "skip"
-            s["error"] = "Upload did not produce a message_id"
+            s["error"] = "Upload did not produce a file_id"
         else:
             tg = TelegramClient(
                 bot_token=settings.telegram_bot_token,
                 api_id=settings.telegram_api_id,
                 api_hash=settings.telegram_api_hash,
             )
-            downloaded_bytes = await tg.download_file(
-                _TEST_CHANNEL_ID, uploaded_message_id
-            )
+            downloaded_bytes = await tg.download_file_by_id(uploaded_file_id)
             if downloaded_bytes == _TEST_FILE_CONTENT:
                 s["status"] = "pass"
                 s["size_bytes"] = len(downloaded_bytes)
@@ -228,16 +228,19 @@ async def _run_test():
                 )
                 await session.flush()
 
+            now = datetime.now(timezone.utc)
+            now = datetime.now(timezone.utc)
             await session.execute(
                 text(
-                    "INSERT INTO user_channels (user_id, channel_id, bot_token_id, api_key_hash) "
-                    "VALUES (:uid, :cid, :bt, :akh)"
+                    "INSERT INTO user_channels (user_id, channel_id, bot_token_id, api_key_hash, created_at) "
+                    "VALUES (:uid, :cid, :bt, :akh, :ca)"
                 ),
                 {
                     "uid": _TEST_USER_ID,
                     "cid": _TEST_CHANNEL_ID,
                     "bt": settings.telegram_bot_token,
                     "akh": "e2e_test_hash",
+                    "ca": now,
                 },
             )
             await session.flush()
