@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import generate_api_key, hash_api_key, create_jwt
+from ..config import settings
 from ..database import get_db
 from ..models import UserChannel
 
@@ -25,8 +26,8 @@ async def register(db: AsyncSession = Depends(get_db)):
 
     user = UserChannel(
         user_id=user_id,
-        channel_id="",
-        bot_token_id="",
+        channel_id=settings.telegram_storage_chat_id,
+        bot_token_id=settings.telegram_bot_token,
         api_key_hash=api_key_hash,
     )
     db.add(user)

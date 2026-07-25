@@ -5,6 +5,7 @@ class Settings(BaseSettings):
     telegram_bot_token: str = ""
     telegram_api_id: str = ""
     telegram_api_hash: str = ""
+    telegram_storage_chat_id: str = ""
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/paradox_registry"
     redis_url: str = "redis://localhost:6379/0"
     jwt_secret: str = "change-me-in-production"

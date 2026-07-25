@@ -1,3 +1,4 @@
+// Keep in sync with shared/src/types.ts
 export interface ClientConfig {
   database_path: string;
   encryption: {
@@ -23,12 +24,14 @@ export interface ClientConfig {
   };
 }
 
+// Keep in sync with shared/src/types.ts
 export interface QueryResult {
   rows: any[];
   changes: number;
   lastInsertRowid: number;
 }
 
+// Keep in sync with shared/src/types.ts
 export interface SelectOptions {
   limit?: number;
   offset?: number;

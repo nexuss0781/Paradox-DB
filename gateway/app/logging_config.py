@@ -5,6 +5,10 @@ from datetime import datetime, timezone
 
 
 class JSONFormatter(logging.Formatter):
+    _KNOWN_KEYS = frozenset(
+        logging.LogRecord("", 0, "", 0, "", (), None).__dict__.keys()
+    )
+
     def format(self, record):
         log = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -12,9 +16,10 @@ class JSONFormatter(logging.Formatter):
             "logger": record.name,
             "message": record.getMessage(),
         }
-        if hasattr(record, "request_id"):
-            log["request_id"] = record.request_id
-        return json.dumps(log)
+        for key, value in record.__dict__.items():
+            if key not in self._KNOWN_KEYS and not key.startswith("_"):
+                log[key] = value
+        return json.dumps(log, default=str)
 
 
 def setup_logging():

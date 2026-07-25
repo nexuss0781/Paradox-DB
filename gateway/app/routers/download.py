@@ -7,15 +7,20 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user
+from app.config import settings
 from app.database import get_db
-from app.models import DatabaseVersion, SyncLog, UserChannel
+from app.models import DatabaseVersion, SyncLog, UserChannel, VersionHistory
 from app.services.telegram import TelegramClient, TelegramPermanentError
 
 router = APIRouter()
 
 
 def _get_tg_client(user: UserChannel) -> TelegramClient:
-    return TelegramClient(bot_token=user.bot_token_id)
+    return TelegramClient(
+        bot_token=settings.telegram_bot_token,
+        api_id=settings.telegram_api_id,
+        api_hash=settings.telegram_api_hash,
+    )
 
 
 @router.get("/download")
@@ -28,22 +33,17 @@ async def download(
 ):
     if version is not None:
         result = await db.execute(
-            select(DatabaseVersion).where(
-                DatabaseVersion.user_id == user.user_id,
-                DatabaseVersion.database_name == database_name,
+            select(VersionHistory).where(
+                VersionHistory.user_id == user.user_id,
+                VersionHistory.database_name == database_name,
+                VersionHistory.version == version,
             )
         )
-        # For specific version, we need to map version to message_id
-        # The database_versions table tracks latest, but for historical versions
-        # we look up by matching the requested version number
-        # Since we only store latest in DB, version-specific downloads use
-        # the message_id chain. For now, if version matches latest, serve it.
-        db_version = result.scalar_one_or_none()
-        if not db_version:
-            raise HTTPException(status_code=404, detail="Database not found")
-        if version != db_version.latest_version:
+        history_entry = result.scalar_one_or_none()
+        if not history_entry:
             raise HTTPException(status_code=404, detail="Version not found")
-        message_id = db_version.latest_message_id
+        message_id = history_entry.message_id
+        resolved_version = history_entry.version
     else:
         result = await db.execute(
             select(DatabaseVersion).where(
@@ -55,6 +55,7 @@ async def download(
         if not db_version:
             raise HTTPException(status_code=404, detail="Database not found")
         message_id = db_version.latest_message_id
+        resolved_version = db_version.latest_version
 
     log_entry = SyncLog(
         request_id=str(uuid.uuid4()),
@@ -97,6 +98,6 @@ async def download(
         headers={
             "Content-Disposition": f'attachment; filename="{database_name}"',
             "X-Message-ID": message_id,
-            "X-Version": str(db_version.latest_version),
+            "X-Version": str(resolved_version),
         },
     )

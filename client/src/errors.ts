@@ -27,3 +27,41 @@ export class ConfigError extends Error {
     this.name = 'ConfigError';
   }
 }
+
+export class ConflictError extends Error {
+  remoteVersion: number;
+  yourVersion: number;
+  remoteMessageId: string;
+
+  constructor(remoteVersion: number, yourVersion: number, remoteMessageId: string) {
+    super(`Conflict: remote v${remoteVersion} vs your v${yourVersion}`);
+    this.name = 'ConflictError';
+    this.remoteVersion = remoteVersion;
+    this.yourVersion = yourVersion;
+    this.remoteMessageId = remoteMessageId;
+  }
+}
+
+export class RateLimitError extends Error {
+  retryAfterSeconds: number;
+
+  constructor(retryAfterSeconds: number) {
+    super(`Rate limited: retry after ${retryAfterSeconds}s`);
+    this.name = 'RateLimitError';
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
+}
+
+export class AuthenticationError extends Error {
+  constructor(message = 'Authentication failed') {
+    super(message);
+    this.name = 'AuthenticationError';
+  }
+}
+
+export class NetworkError extends Error {
+  constructor(message = 'Network error') {
+    super(message);
+    this.name = 'NetworkError';
+  }
+}

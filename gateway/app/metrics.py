@@ -1,3 +1,4 @@
+import logging
 import time
 
 from fastapi import Request, Response
@@ -9,6 +10,8 @@ from prometheus_client import (
     Histogram,
     generate_latest,
 )
+
+logger = logging.getLogger("gateway.access")
 
 sync_uploads_total = Counter("sync_uploads_total", "Total upload attempts")
 sync_uploads_success = Counter("sync_uploads_success", "Successful uploads")
@@ -41,13 +44,15 @@ class MetricsMiddleware(BaseHTTPMiddleware):
         if hasattr(request.state, "request_id"):
             req_id = request.state.request_id
 
-        print(
-            f'{{"request_id": "{req_id}", '
-            f'"method": "{request.method}", '
-            f'"path": "{request.url.path}", '
-            f'"status": {response.status_code}, '
-            f'"duration_ms": {duration_ms:.1f}}}',
-            flush=True,
+        logger.info(
+            "request",
+            extra={
+                "request_id": req_id,
+                "method": request.method,
+                "path": request.url.path,
+                "status": response.status_code,
+                "duration_ms": round(duration_ms, 1),
+            },
         )
         return response
 

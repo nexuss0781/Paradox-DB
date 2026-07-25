@@ -50,6 +50,19 @@ class SyncLog(Base):
     user_channel = relationship("UserChannel", back_populates="sync_logs")
 
 
+class VersionHistory(Base):
+    __tablename__ = "version_history"
+
+    user_id = Column(String(64), ForeignKey("user_channels.user_id"), primary_key=True)
+    database_name = Column(String(255), primary_key=True)
+    version = Column(Integer, primary_key=True)
+    message_id = Column(String(64), nullable=False)
+    file_hash = Column(String(64), nullable=False)
+    file_size = Column(Integer, nullable=False, default=0)
+    version_type = Column(String(32), nullable=False, default="full")
+    uploaded_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
 class ConflictLog(Base):
     __tablename__ = "conflict_log"
 

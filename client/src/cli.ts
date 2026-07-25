@@ -25,8 +25,9 @@ Commands:
   select <table> [where]   Query rows
   update <table> <set> <where>  Update rows
   delete <table> <where>   Delete rows
-  sync                     Manual sync trigger
-  pull [version]           Pull latest from Telegram
+   sync                     Manual sync trigger
+   push                     Push local changes to gateway
+   pull [version]           Pull latest from Telegram
   status                   Show sync status
   logs                     Show sync history
   versions                 List remote versions
@@ -90,6 +91,25 @@ async function main() {
     case 'init': {
       const name = cleanArgs[1];
       if (!name) { console.error('Usage: tgdb init <name>'); process.exit(1); }
+      const config = loadConfig();
+      if (!config.sync.api_key) {
+        console.log('No API key found. Registering with gateway...');
+        const syncManager = new SyncManager(config);
+        const baseUrl = config.sync.gateway_url.replace(/\/+$/, '');
+        try {
+          const result = await syncManager.httpPostJSON(`${baseUrl}/v1/auth/register`, {}, '');
+          if (result.status === 200 && result.data?.api_key) {
+            config.sync.api_key = result.data.api_key;
+            saveConfig(config);
+            console.log(`Registered. User ID: ${result.data.user_id}`);
+            console.log(`API key saved to config.`);
+          } else {
+            console.error('Registration failed. You can set api_key manually in config.');
+          }
+        } catch (err: any) {
+          console.error(`Registration failed: ${err.message}. Set api_key manually.`);
+        }
+      }
       const dbPath = resolveDbPath(name);
       if (fs.existsSync(dbPath)) { console.error(`Database '${name}' already exists`); process.exit(1); }
       const engine = getEngine(name);
@@ -171,9 +191,47 @@ async function main() {
     }
     case 'sync': {
       const config = loadConfig();
+      const dbPath = resolveDbPath();
+      config.database_path = dbPath;
+      const engine = new ClientEngine(config);
+      engine.open(passphrase);
+      const tracker = new ChangeTracker(engine);
+      tracker.startSession();
+      const changeset = tracker.exportChangeset();
       const syncManager = new SyncManager(config);
-      const ok = await syncManager.pullLatest();
-      output({ synced: ok }, jsonMode);
+      let pushResult: { success: boolean; error?: string; version?: number } | null = null;
+      if (changeset && changeset.length > 0) {
+        pushResult = await syncManager.push(changeset);
+        if (pushResult.success) {
+          tracker.truncateBuffer();
+        }
+      }
+      const pulled = await syncManager.pullLatest();
+      engine.close();
+      output({ pushed: pushResult, pulled }, jsonMode);
+      break;
+    }
+    case 'push': {
+      const config = loadConfig();
+      const dbPath = resolveDbPath();
+      config.database_path = dbPath;
+      const engine = new ClientEngine(config);
+      engine.open(passphrase);
+      const tracker = new ChangeTracker(engine);
+      tracker.startSession();
+      const changeset = tracker.exportChangeset();
+      const syncManager = new SyncManager(config);
+      let result: { success: boolean; error?: string; version?: number };
+      if (changeset && changeset.length > 0) {
+        result = await syncManager.push(changeset);
+        if (result.success) {
+          tracker.truncateBuffer();
+        }
+      } else {
+        result = await syncManager.pushFullDatabase();
+      }
+      engine.close();
+      output(result, jsonMode);
       break;
     }
     case 'pull': {
@@ -188,7 +246,22 @@ async function main() {
       const config = loadConfig();
       const syncManager = new SyncManager(config);
       const status = await syncManager.getStatus();
-      output(status || { error: 'Could not fetch status' }, jsonMode);
+      if (!status) {
+        output({ error: 'Could not fetch status' }, jsonMode);
+        break;
+      }
+      const dbPath = config.database_path.replace(/^~/, os.homedir());
+      const localExists = fs.existsSync(dbPath);
+      const enriched = {
+        ...status,
+        databases: status.databases.map((d: any) => ({
+          ...d,
+          local_version: syncManager.getLocalVersion(),
+          is_stale: syncManager.isLocalStale(),
+          local_file_exists: localExists,
+        })),
+      };
+      output(enriched, jsonMode);
       break;
     }
     case 'logs': {
@@ -204,17 +277,39 @@ async function main() {
     case 'versions': {
       const config = loadConfig();
       const syncManager = new SyncManager(config);
-      const status = await syncManager.getStatus();
-      const databases = status?.databases || [];
-      output(databases.map((d: any) => ({ name: d.name, version: d.latest_version, message_id: d.latest_message_id })), jsonMode);
+      const baseUrl = config.sync.gateway_url.replace(/\/+$/, '');
+      const params = new URLSearchParams();
+      params.set('database_name', path.basename(config.database_path));
+      const url = `${baseUrl}/v1/versions?${params.toString()}`;
+      try {
+        const data = await syncManager.httpGetJSON(url, config.sync.api_key);
+        output(data, jsonMode);
+      } catch {
+        output({ error: 'Could not fetch versions' }, jsonMode);
+      }
       break;
     }
     case 'rollback': {
       const version = parseInt(cleanArgs[1]);
       if (!version) { console.error('Usage: tgdb rollback <version>'); process.exit(1); }
       const config = loadConfig();
+      const syncManager = new SyncManager(config);
       const baseUrl = config.sync.gateway_url.replace(/\/+$/, '');
-      output({ message: `Rollback to version ${version} — use gateway POST /v1/rollback` }, jsonMode);
+      const url = `${baseUrl}/v1/rollback`;
+      try {
+        const result = await syncManager.httpPostJSON(url, {
+          database_name: path.basename(config.database_path),
+          target_version: version,
+        }, config.sync.api_key);
+        if (result.status === 200) {
+          await syncManager.pullVersion(version);
+          output({ rolled_back_to: version, success: true }, jsonMode);
+        } else {
+          output({ error: result.data?.detail || 'rollback_failed', status: result.status }, jsonMode);
+        }
+      } catch (err: any) {
+        output({ error: err.message }, jsonMode);
+      }
       break;
     }
     case 'config': {

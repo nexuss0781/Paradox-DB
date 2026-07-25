@@ -1,5 +1,6 @@
 import asyncio
 from logging.config import fileConfig
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from alembic import context
 from sqlalchemy import pool
@@ -9,12 +10,24 @@ from app.config import settings
 from app.database import Base
 
 config = context.config
-config.set_main_option("sqlalchemy.url", settings.database_url)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata
+
+
+def _prepare_database_url(url: str) -> str:
+    """Strip sslmode query param from URL (asyncpg uses connect_args instead)."""
+    parsed = urlparse(url)
+    params = parse_qs(parsed.query)
+    params.pop("sslmode", None)
+    new_query = urlencode(params, doseq=True)
+    return urlunparse(parsed._replace(query=new_query))
+
+
+_db_url = _prepare_database_url(settings.database_url)
+config.set_main_option("sqlalchemy.url", _db_url)
 
 
 def run_migrations_offline() -> None:
@@ -32,7 +45,7 @@ def do_run_migrations(connection) -> None:
 
 async def run_async_migrations() -> None:
     connectable = create_async_engine(
-        settings.database_url,
+        _db_url,
         poolclass=pool.NullPool,
     )
     async with connectable.connect() as connection:

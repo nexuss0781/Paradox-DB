@@ -1,13 +1,16 @@
 import hashlib
+import logging
 import uuid
 from datetime import datetime, timezone
 
+import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user, rate_limiter
+from app.config import settings
 from app.database import get_db
 from app.metrics import (
     sync_uploads_failed,
@@ -15,24 +18,39 @@ from app.metrics import (
     sync_uploads_total,
     sync_upload_latency_ms,
 )
-from app.models import DatabaseVersion, SyncLog, UserChannel
+from app.models import DatabaseVersion, SyncLog, UserChannel, VersionHistory
 from app.services.telegram import TelegramClient, TelegramRateLimitError
 
 import time
 import os
 import httpx
-import asyncio
+
+logger = logging.getLogger("gateway.upload")
 
 router = APIRouter()
 
-_upload_locks: dict[str, asyncio.Lock] = {}
+
+class RedisLock:
+    def __init__(self):
+        self._redis = None
+
+    async def _get_redis(self):
+        if self._redis is None:
+            self._redis = aioredis.from_url(settings.redis_url, decode_responses=True)
+        return self._redis
+
+    async def acquire(self, key: str, timeout: int = 30) -> bool:
+        redis = await self._get_redis()
+        lock_key = f"lock:upload:{key}"
+        return await redis.set(lock_key, "1", nx=True, ex=timeout)
+
+    async def release(self, key: str):
+        redis = await self._get_redis()
+        lock_key = f"lock:upload:{key}"
+        await redis.delete(lock_key)
 
 
-def _get_lock(user_id: str, db_name: str) -> asyncio.Lock:
-    key = f"{user_id}:{db_name}"
-    if key not in _upload_locks:
-        _upload_locks[key] = asyncio.Lock()
-    return _upload_locks[key]
+_upload_lock = RedisLock()
 
 
 @router.post("/upload")
@@ -80,17 +98,13 @@ async def upload(
             content={"error": "rate_limited", "retry_after_seconds": 60, "queue_depth": 0},
         )
 
-    lock = _get_lock(user.user_id, database_name)
-    if lock.locked():
-        try:
-            await asyncio.wait_for(lock.acquire(), timeout=30)
-        except asyncio.TimeoutError:
-            return JSONResponse(
-                status_code=503,
-                content={"error": "lock_timeout", "detail": "Another upload is in progress"},
-            )
-    else:
-        await lock.acquire()
+    lock_key = f"{user.user_id}:{database_name}"
+    acquired = await _upload_lock.acquire(lock_key, timeout=settings.lock_timeout_seconds)
+    if not acquired:
+        return JSONResponse(
+            status_code=503,
+            content={"error": "lock_timeout", "detail": "Another upload is in progress"},
+        )
 
     try:
         # Check version conflict
@@ -130,8 +144,6 @@ async def upload(
         await db.flush()
 
         # Upload to Telegram
-        from app.config import settings
-
         tg_client = TelegramClient(
             bot_token=settings.telegram_bot_token,
             api_id=settings.telegram_api_id,
@@ -183,6 +195,18 @@ async def upload(
             )
             db.add(new_entry)
 
+        history_entry = VersionHistory(
+            user_id=user.user_id,
+            database_name=database_name,
+            version=new_version,
+            message_id=message_id,
+            file_hash=file_hash,
+            file_size=len(file_bytes),
+            version_type=version_type if version_type != "auto" else "full",
+            uploaded_at=datetime.now(timezone.utc),
+        )
+        db.add(history_entry)
+
         log_entry.telegram_message_id = message_id
         log_entry.status = "success"
         log_entry.completed_at = datetime.now(timezone.utc)
@@ -204,4 +228,4 @@ async def upload(
         await db.rollback()
         return JSONResponse(status_code=500, content={"error": "internal_error", "detail": str(e)})
     finally:
-        lock.release()
+        await _upload_lock.release(lock_key)
