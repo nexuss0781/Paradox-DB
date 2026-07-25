@@ -326,6 +326,56 @@ async def _run_test():
     s["duration_ms"] = round((time.time() - t0) * 1000, 1)
     results.append(s)
 
+    # ── 10. Send results to Telegram channel ─────────────────────────
+    total_ms = round((time.time() - start_all) * 1000, 1)
+    passed = sum(1 for r in results if r["status"] == "pass")
+    failed = sum(1 for r in results if r["status"] == "fail")
+    skipped = sum(1 for r in results if r["status"] == "skip")
+
+    status_icons = {"pass": "✅", "fail": "❌", "skip": "⏭️", "pending": "⏳"}
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    lines = [
+        f"📋 Paradox-DB E2E Test Report",
+        f"🕐 {now_str}",
+        f"{'━' * 30}",
+    ]
+    for r in results:
+        icon = status_icons.get(r["status"], "?")
+        line = f"{icon} {r['name']}  {r['duration_ms']}ms"
+        if r["error"]:
+            line += f"\n   ↳ {r['error'][:120]}"
+        lines.append(line)
+
+    lines.extend([
+        f"{'━' * 30}",
+        f"Total: {passed}/{len(results)} passed",
+        f"Duration: {total_ms}ms",
+        f"Overall: {'✅ PASS' if failed == 0 else '❌ FAIL'}",
+    ])
+
+    log_text = "\n".join(lines)
+
+    s = _step("send_to_channel")
+    t0 = time.time()
+    try:
+        if not _TEST_CHANNEL_ID:
+            s["status"] = "skip"
+            s["error"] = "TELEGRAM_STORAGE_CHAT_ID not set"
+        else:
+            tg = TelegramClient(
+                bot_token=settings.telegram_bot_token,
+                api_id=settings.telegram_api_id,
+                api_hash=settings.telegram_api_hash,
+            )
+            await tg.send_message(_TEST_CHANNEL_ID, log_text)
+            s["status"] = "pass"
+    except Exception as e:
+        s["status"] = "fail"
+        s["error"] = str(e)
+    s["duration_ms"] = round((time.time() - t0) * 1000, 1)
+    results.append(s)
+
     # ── Summary ──────────────────────────────────────────────────────
     total_ms = round((time.time() - start_all) * 1000, 1)
     passed = sum(1 for r in results if r["status"] == "pass")
