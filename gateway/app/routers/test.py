@@ -21,6 +21,7 @@ from app.config import settings
 from app.database import async_session_factory, get_db
 from app.models import DatabaseVersion, UserChannel, VersionHistory
 from app.services.telegram import TelegramClient
+from app.telegram_logger import log_operation
 
 router = APIRouter()
 
@@ -336,69 +337,18 @@ async def _run_test():
     s = _step("send_to_channel")
     t0 = time.time()
     try:
-        if not _TEST_CHANNEL_ID:
-            s["status"] = "skip"
-            s["error"] = "TELEGRAM_STORAGE_CHAT_ID not set"
-        else:
-            tg = TelegramClient(
-                bot_token=settings.telegram_bot_token,
-                api_id=settings.telegram_api_id,
-                api_hash=settings.telegram_api_hash,
-            )
+        # Send header
+        await log_operation("e2e_test", f"E2E Test Run — {passed}/{len(results)} passed | {total_ms}ms | {'PASS' if failed == 0 else 'FAIL'}", "success" if failed == 0 else "fail")
 
-            # Resolve channel name
-            channel_name = "unknown"
-            try:
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    resp = await client.post(
-                        f"https://api.telegram.org/bot{settings.telegram_bot_token}/getChat",
-                        json={"chat_id": _TEST_CHANNEL_ID},
-                    )
-                    if resp.status_code == 200:
-                        data = resp.json().get("result", {})
-                        channel_name = data.get("title") or data.get("username") or str(data.get("id", "unknown"))
-            except Exception:
-                pass
+        # Send each step
+        for r in results:
+            icon = {"pass": "✅", "fail": "❌", "skip": "⏭️"}.get(r["status"], "?")
+            log_detail = f"{r['status'].upper()} — {r['duration_ms']}ms"
+            if r["error"]:
+                log_detail += f" — {r['error'][:200]}"
+            await log_operation("e2e_test", f"{icon} {r['name']}: {log_detail}", "success" if r["status"] == "pass" else "fail" if r["status"] == "fail" else "info")
 
-            now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-
-            # Send header
-            await tg.send_message(
-                _TEST_CHANNEL_ID,
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"📋 E2E Test Run — {now_str}\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            )
-
-            # Send each step as individual log
-            status_icons = {"pass": "✅", "fail": "❌", "skip": "⏭️", "pending": "⏳"}
-            for r in results:
-                icon = status_icons.get(r["status"], "?")
-                action = r["name"]
-                log_detail = f"{icon} {r['status'].upper()} — {r['duration_ms']}ms"
-                if r["error"]:
-                    log_detail += f"\nError: {r['error'][:200]}"
-
-                msg = (
-                    f"#Main_Channel_name: {channel_name}\n"
-                    f"#Main_id: {_TEST_CHANNEL_ID}\n"
-                    f"#action: {action}\n"
-                    f"#log: {log_detail}"
-                )
-                await tg.send_message(_TEST_CHANNEL_ID, msg)
-
-            # Send summary
-            await tg.send_message(
-                _TEST_CHANNEL_ID,
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"#Main_Channel_name: {channel_name}\n"
-                f"#Main_id: {_TEST_CHANNEL_ID}\n"
-                f"#action: summary\n"
-                f"#log: {passed}/{len(results)} passed | {total_ms}ms | {'PASS' if failed == 0 else 'FAIL'}\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            )
-
-            s["status"] = "pass"
+        s["status"] = "pass"
     except Exception as e:
         s["status"] = "fail"
         s["error"] = str(e)
