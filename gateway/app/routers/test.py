@@ -229,7 +229,7 @@ async def _run_test():
                 await session.flush()
 
             now = datetime.now(timezone.utc)
-            now = datetime.now(timezone.utc)
+            now = datetime.utcnow()
             await session.execute(
                 text(
                     "INSERT INTO user_channels (user_id, channel_id, bot_token_id, api_key_hash, created_at) "
@@ -247,7 +247,7 @@ async def _run_test():
 
             if uploaded_message_id:
                 file_hash = hashlib.sha256(_TEST_FILE_CONTENT).hexdigest()
-                now = datetime.now(timezone.utc)
+                now = datetime.utcnow()
                 await session.execute(
                     text(
                         "INSERT INTO database_versions "
