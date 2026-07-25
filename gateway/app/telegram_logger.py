@@ -22,7 +22,9 @@ async def _resolve_channel() -> tuple[str, str]:
     if _RESOLVED:
         return _CHANNEL_ID, _CHANNEL_NAME
 
-    _CHANNEL_ID = settings.telegram_storage_chat_id
+    _CHANNEL_ID = settings.telegram_log_chat_id
+    if not _CHANNEL_ID:
+        _CHANNEL_ID = settings.telegram_storage_chat_id
     if not _CHANNEL_ID:
         _RESOLVED = True
         return _CHANNEL_ID, "unknown"
