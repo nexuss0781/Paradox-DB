@@ -255,3 +255,25 @@ class TelegramClient:
                 return resp.status_code == 200
         except Exception:
             return False
+
+    async def send_message(self, chat_id: str, text: str) -> str:
+        """Send a text message to a chat. Returns message_id."""
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{self.base_url}/sendMessage",
+                json={
+                    "chat_id": chat_id,
+                    "text": text,
+                    "parse_mode": "HTML",
+                },
+            )
+            if resp.status_code == 429:
+                retry_after = (
+                    resp.json().get("parameters", {}).get("retry_after", 30)
+                )
+                raise TelegramRateLimitError(
+                    "Rate limited", retry_after=retry_after
+                )
+            if resp.status_code != 200:
+                raise TelegramPermanentError(f"sendMessage failed: {resp.text}")
+            return str(resp.json()["result"]["message_id"])
