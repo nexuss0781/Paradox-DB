@@ -10,6 +10,7 @@ from app.config import settings
 from app.database import async_session_factory
 from app.metrics import registry_operations, telegram_api_errors
 from app.models import HealthResponse
+from app.telegram_logger import log_operation
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +19,7 @@ router = APIRouter()
 
 @router.get("/health", response_model=HealthResponse)
 async def health_check():
+    await log_operation("health", "Health check: ok", "success")
     return HealthResponse(status="ok")
 
 
@@ -63,10 +65,12 @@ async def readiness_check():
 
     if errors:
         logger.warning("readiness check failed: %s", errors)
+        await log_operation("health", f"Readiness failed: {errors}", "fail")
         return JSONResponse(
             status_code=503,
             content={"status": "not_ready", "errors": errors},
         )
+    await log_operation("health", "Readiness check: ready", "success")
     return HealthResponse(status="ready")
 
 
@@ -77,6 +81,7 @@ TELEGRAM_CHECK_TIMEOUT = 5.0
 async def telegram_check():
     token = settings.telegram_bot_token
     if not token:
+        await log_operation("health", "Telegram check: not configured", "warn")
         return JSONResponse(
             status_code=503,
             content={"status": "not_configured", "error": "TELEGRAM_BOT_TOKEN not set"},
@@ -88,14 +93,17 @@ async def telegram_check():
             if resp.status_code == 200:
                 data = resp.json()
                 if data.get("ok"):
+                    await log_operation("health", "Telegram check: ok", "success")
                     return HealthResponse(status="ok")
             telegram_api_errors.labels(error_type=f"http_{resp.status_code}").inc()
+            await log_operation("health", f"Telegram check: unreachable (HTTP {resp.status_code})", "fail")
             return JSONResponse(
                 status_code=503,
                 content={"status": "unreachable", "error": f"Telegram API returned {resp.status_code}"},
             )
     except httpx.HTTPError as e:
         telegram_api_errors.labels(error_type="network_error").inc()
+        await log_operation("health", f"Telegram check: network error — {e}", "fail")
         return JSONResponse(
             status_code=503,
             content={"status": "unreachable", "error": str(e)},

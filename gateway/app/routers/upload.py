@@ -88,11 +88,13 @@ async def upload(
         try:
             file_bytes = base64.b64decode(changeset_data_b64)
         except Exception:
+            await log_operation("upload", f"Invalid base64 changeset from user {user.user_id}: {database_name}", "fail")
             return JSONResponse(status_code=400, content={"error": "invalid base64 in changeset_data"})
     else:
         try:
             file_bytes = base64.b64decode(file_data_b64)
         except Exception:
+            await log_operation("upload", f"Invalid base64 file_data from user {user.user_id}: {database_name}", "fail")
             return JSONResponse(status_code=400, content={"error": "invalid base64 in file_data"})
 
     if not rate_limiter.check(user.user_id):
@@ -250,6 +252,7 @@ async def upload(
     except Exception as e:
         sync_uploads_failed.inc()
         await db.rollback()
+        await log_operation("upload", f"Internal error: {database_name} user={user.user_id} — {e}", "fail")
         return JSONResponse(status_code=500, content={"error": "internal_error", "detail": str(e)})
     finally:
         await _upload_lock.release(lock_key)
