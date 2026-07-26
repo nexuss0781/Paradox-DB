@@ -9,6 +9,7 @@ class EncryptionConfig(BaseModel):
     cipher: str = "aes-256-cbc"
     kdf_iterations: int = 256000
     page_size: int = 4096
+    passphrase: str = "default"
 
 
 class SyncConfig(BaseModel):
@@ -34,6 +35,8 @@ class LoggingConfig(BaseModel):
 
 class Config(BaseModel):
     database_path: str = "~/.paradox/data.db"
+    project_id: str = ""
+    database_id: str = ""
     encryption: EncryptionConfig = EncryptionConfig()
     sync: SyncConfig = SyncConfig()
     conflict: ConflictConfig = ConflictConfig()
