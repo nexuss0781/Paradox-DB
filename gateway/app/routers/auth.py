@@ -1,6 +1,6 @@
 """Auth endpoints — register, login, me."""
 
-import secrets
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
@@ -27,17 +27,17 @@ async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=409, detail="Username already taken")
 
     user = User(
-        id=str(secrets.token_urlsafe(16)),
+        id=uuid.uuid4(),
         email=body.email,
         username=body.username,
-        password_hash=hash_password(body.password),
+        password_hash=hash_password(body.password[:72]),
     )
     db.add(user)
     await db.flush()
 
-    token = create_jwt(user.id)
+    token = create_jwt(str(user.id))
     return AuthResponse(
-        user_id=user.id,
+        user_id=str(user.id),
         email=user.email,
         username=user.username,
         access_token=token,
@@ -49,14 +49,14 @@ async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
     """Login with email and password."""
     result = await db.execute(select(User).where(User.email == body.email))
     user = result.scalar_one_or_none()
-    if not user or not verify_password(body.password, user.password_hash):
+    if not user or not verify_password(body.password[:72], user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Account disabled")
 
-    token = create_jwt(user.id)
+    token = create_jwt(str(user.id))
     return AuthResponse(
-        user_id=user.id,
+        user_id=str(user.id),
         email=user.email,
         username=user.username,
         access_token=token,
@@ -69,7 +69,7 @@ async def me(
 ):
     """Get current user info."""
     return UserResponse(
-        id=user.id,
+        id=str(user.id),
         email=user.email,
         username=user.username,
         is_active=user.is_active,
