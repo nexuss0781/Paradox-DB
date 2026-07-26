@@ -48,11 +48,11 @@ class Engine:
             tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
             tmp.close()
             self._tmp_path = tmp.name
-            self._conn = sqlite3.connect(self._tmp_path)
+            self._conn = sqlite3.connect(self._tmp_path, check_same_thread=False)
             self._conn.row_factory = sqlite3.Row
             return self._conn
         tmp_path = self._decrypt_to_temp()
-        self._conn = sqlite3.connect(tmp_path)
+        self._conn = sqlite3.connect(tmp_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         return self._conn
 

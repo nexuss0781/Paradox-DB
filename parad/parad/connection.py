@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -62,6 +63,12 @@ class SyncDaemon:
       when it changes.
     * Pulls from the gateway every *pull_interval* seconds.
     * All exceptions are caught so the daemon never crashes the host thread.
+
+    .. warning::
+
+       The daemon is designed for CLI / single-process use.  In a web server
+       (FastAPI, Flask, etc.) use ``auto_sync=False`` and call
+       :meth:`ParadConnection.push` / :meth:`ParadConnection.pull` manually.
     """
 
     PUSH_INTERVAL = 2.0
@@ -79,6 +86,7 @@ class SyncDaemon:
         self._gateway = GatewayClient(gateway_url, api_key)
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
+        self._lock = threading.Lock()
         self.last_sync: float | None = None
 
     # ── public API ──────────────────────────────────────────────
@@ -145,7 +153,8 @@ class SyncDaemon:
 
     def _push(self, current_hash: str):
         try:
-            raw = self._engine.get_raw_bytes()
+            with self._lock:
+                raw = self._engine.get_raw_bytes()
             remote_ver = sync_state.get_remote_version(self._db_name) or 0
             resp = self._gateway.upload(
                 database_name=self._db_name,
@@ -161,7 +170,8 @@ class SyncDaemon:
             if exc.status_code == 409:
                 self._pull()
                 try:
-                    raw = self._engine.get_raw_bytes()
+                    with self._lock:
+                        raw = self._engine.get_raw_bytes()
                     remote_ver = sync_state.get_remote_version(self._db_name) or 0
                     resp = self._gateway.upload(
                         database_name=self._db_name,
@@ -184,6 +194,13 @@ class SyncDaemon:
         self._pull()
 
     def _pull(self):
+        """Pull from gateway and replace the local encrypted file.
+
+        Uses a lock to avoid racing with concurrent engine access.  The
+        engine is *not* closed/reopened — the on-disk encrypted file is
+        replaced and the next ``engine.close()`` will re-encrypt from the
+        current temp file.  On restart the fresh encrypted file is picked up.
+        """
         try:
             result = self._gateway.download(self._db_name)
             if not result.bytes:
@@ -194,31 +211,19 @@ class SyncDaemon:
             if remote_hash == current_hash:
                 return
 
-            # Write raw (decrypted) bytes to the temp file and re-encrypt
-            import tempfile
-            from pathlib import Path as _P
-
-            tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-            tmp.write(result.bytes)
-            tmp.close()
-
-            encrypted = _P(tmp.name).read_bytes()
+            # Encrypt and replace the on-disk file (don't close engine)
             from parad.crypto import encrypt_file
 
-            self._engine.db_path.parent.mkdir(parents=True, exist_ok=True)
-            self._engine.db_path.write_bytes(encrypt_file(encrypted, self._engine.passphrase))
-
-            os.unlink(tmp.name)
+            encrypted = encrypt_file(result.bytes, self._engine.passphrase)
+            with self._lock:
+                self._engine.db_path.parent.mkdir(parents=True, exist_ok=True)
+                self._engine.db_path.write_bytes(encrypted)
 
             if remote_ver is not None:
                 sync_state.set_remote_version(
                     self._db_name, remote_ver, remote_hash
                 )
             sync_state.set_last_local_hash(self._db_name, remote_hash)
-
-            # Reopen the engine so it picks up the new file
-            self._engine.close()
-            self._engine.open()
 
             self.last_sync = time.time()
         except Exception:
@@ -258,6 +263,9 @@ class ParadConnection:
     Wraps :class:`Engine` for encrypted SQLite operations and optionally
     runs a :class:`SyncDaemon` to keep the database synchronised with a
     remote gateway.
+
+    For web servers (FastAPI, Flask, etc.) use ``auto_sync=False`` and call
+    :meth:`push` / :meth:`pull` manually at startup and shutdown.
     """
 
     def __init__(
@@ -272,16 +280,16 @@ class ParadConnection:
         self._passphrase = passphrase
         self._gateway_url = gateway_url
         self._api_key = api_key
+        self._db_name = gateway_db_name(self._db_path) if self._gateway_url else ""
 
         self._engine = Engine(self._db_path, self._passphrase)
         self._engine.open(create=True)
 
         self._daemon: SyncDaemon | None = None
         if auto_sync and self._gateway_url:
-            db_name = gateway_db_name(self._db_path)
             self._daemon = SyncDaemon(
                 engine=self._engine,
-                db_name=db_name,
+                db_name=self._db_name,
                 gateway_url=self._gateway_url,
                 api_key=self._api_key,
             )
@@ -334,6 +342,72 @@ class ParadConnection:
     def tables(self) -> list[str]:
         return self._engine.list_tables()
 
+    # ── manual sync (for web servers) ───────────────────────────
+
+    def push(self) -> int | None:
+        """Push the local database to the gateway.
+
+        Returns the remote version number, or ``None`` if no gateway is
+        configured.  Safe to call from any context — no background threads.
+        """
+        if not self._gateway_url:
+            return None
+        gw = GatewayClient(self._gateway_url, self._api_key)
+        raw = self._engine.get_raw_bytes()
+        remote_ver = sync_state.get_remote_version(self._db_name) or 0
+        resp = gw.upload(
+            database_name=self._db_name,
+            file_bytes=raw,
+            version=remote_ver,
+        )
+        current_hash = hashlib.sha256(raw).hexdigest()
+        sync_state.set_remote_version(self._db_name, resp.version, current_hash)
+        sync_state.set_last_local_hash(self._db_name, current_hash)
+        return resp.version
+
+    def pull(self) -> bool:
+        """Pull the latest version from the gateway, replacing the local file.
+
+        Returns ``True`` if new data was downloaded, ``False`` if already
+        up-to-date or no gateway is configured.  Safe to call from any
+        context — no background threads.
+
+        After pulling, the on-disk encrypted file is replaced.  The caller
+        should re-open the connection or call :meth:`close` and re-connect
+        to pick up the new data in the temp file.
+        """
+        if not self._gateway_url:
+            return False
+        gw = GatewayClient(self._gateway_url, self._api_key)
+        result = gw.download(self._db_name)
+        if not result.bytes:
+            return False
+
+        remote_hash = hashlib.sha256(result.bytes).hexdigest()
+        current_hash = ""
+        try:
+            current_hash = hashlib.sha256(self._engine.get_raw_bytes()).hexdigest()
+        except Exception:
+            pass
+        if remote_hash == current_hash:
+            return False
+
+        from parad.crypto import encrypt_file
+
+        encrypted = encrypt_file(result.bytes, self._passphrase)
+        self._engine.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._engine.db_path.write_bytes(encrypted)
+
+        if result.version is not None:
+            sync_state.set_remote_version(self._db_name, result.version, remote_hash)
+        sync_state.set_last_local_hash(self._db_name, remote_hash)
+
+        # Reopen engine so temp file reflects the new data
+        self._engine.close()
+        self._engine.open()
+
+        return True
+
     # ── context manager ─────────────────────────────────────────
 
     def __enter__(self):
@@ -354,12 +428,23 @@ def connect(
     db_path: str | None = None,
     gateway_url: str | None = None,
     auto_sync: bool = True,
+    pull_on_startup: bool = False,
 ) -> ParadConnection:
     """Connect to a Parad database.
 
     Usage::
 
+        # Local only
+        db = connect("mydb", passphrase="secret", auto_sync=False)
+
+        # With cloud sync (CLI / desktop)
         db = connect("mydb", passphrase="secret")
+
+        # Web server (Render, etc.)
+        db = connect("chatdb", passphrase=os.environ["PARADOX_PASSPHRASE"],
+                      auto_sync=False, pull_on_startup=True)
+
+        # From connection string
         db = connect(url="parad://local/mydb?passphrase=secret")
         db = connect(url=os.environ["DATABASE_URL"])
 
@@ -371,6 +456,13 @@ def connect(
     4. If no positional hints, fall back to config defaults.
     5. Passphrase: explicit > parsed from URL > ``PARADOX_PASSPHRASE`` env > config > ``"default"``.
     6. Gateway: explicit > parsed from URL > config > empty (no sync).
+
+    Parameters:
+
+    - **pull_on_startup**: If ``True`` and a gateway is configured, download
+      the latest version from the gateway before returning.  Useful for
+      web servers on ephemeral filesystems (Render, Heroku, etc.) where the
+      local file may not exist or may be stale.
     """
     cfg = load_config()
     parsed_url: dict = {}
@@ -404,10 +496,19 @@ def connect(
     # ── api_key from config if gateway is set ───────────────────
     api_key = cfg.sync.api_key if resolved_gateway else ""
 
-    return ParadConnection(
+    conn = ParadConnection(
         db_path=resolved_path,
         passphrase=resolved_passphrase,
         gateway_url=resolved_gateway,
         api_key=api_key,
-        auto_sync=auto_sync,
+        auto_sync=auto_sync and bool(resolved_gateway),
     )
+
+    # ── pull on startup ─────────────────────────────────────────
+    if pull_on_startup and resolved_gateway:
+        try:
+            conn.pull()
+        except Exception:
+            logger.debug("pull_on_startup failed", exc_info=True)
+
+    return conn
