@@ -19,6 +19,11 @@ from parad.commands.shell import shell
 from parad.commands.config_cmd import config_group
 from parad.commands.watch import watch_cmd
 from parad.commands.connect import connect
+from parad.commands.auth import auth_group
+from parad.commands.projects import project_group
+from parad.commands.databases import db_group
+from parad.commands.versions import version_group
+from parad.commands.backups import backup_group
 
 main.add_command(connect)
 main.add_command(init)
@@ -36,3 +41,8 @@ main.add_command(delete)
 main.add_command(shell)
 main.add_command(watch_cmd)
 main.add_command(config_group)
+main.add_command(auth_group)
+main.add_command(project_group)
+main.add_command(db_group)
+main.add_command(version_group)
+main.add_command(backup_group)

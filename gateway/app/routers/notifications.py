@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user
 from app.database import get_db
-from app.models import DatabaseVersion, UserChannel
+from app.models import DatabaseVersion, User
 from app.telegram_logger import log_operation
 
 router = APIRouter()
@@ -38,10 +38,10 @@ def notify_user(user_id: str, database_name: str, version: int, message_id: str)
 @router.get("/notifications")
 async def notifications(
     request: Request,
-    user: UserChannel = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ):
     """SSE stream of version change events for this user."""
-    uid = user.user_id
+    uid = str(user.id)
     queue: asyncio.Queue = asyncio.Queue(maxsize=100)
     _user_events.setdefault(uid, queue)
 
