@@ -1,7 +1,9 @@
 """End-to-end integration tests for Paradox-DB Gateway.
 
-These tests mock the Telegram API and test the full flow:
-register → upload → download → versions → rollback
+Tests the full flow against the new phase-4 architecture:
+register → project → database → upload → download → versions → rollback
+
+Telegram API is mocked. Auth is mocked to bypass real DB.
 """
 
 import base64
@@ -40,7 +42,7 @@ from starlette.middleware import Middleware
 
 from app.auth import get_current_user, get_db
 from app.main import app
-from app.models import DatabaseVersion, SyncLog, UserChannel, VersionHistory
+from app.models import DatabaseVersion, ParadoxDB, Project, SyncLog, User
 
 fixed_middlewares = []
 for mw in app.user_middleware:
@@ -51,61 +53,78 @@ for mw in app.user_middleware:
 app.user_middleware = fixed_middlewares
 app.middleware_stack = None
 
-USER_ID = "u_e2e_user"
+USER_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 API_KEY = "pk_e2e_test_key"
+PROJECT_ID = uuid.UUID("00000000-0000-0000-0000-000000000002")
+DB_ID = uuid.UUID("00000000-0000-0000-0000-000000000003")
 
 
-def _mock_user(user_id: str = USER_ID) -> MagicMock:
-    user = MagicMock(spec=UserChannel)
-    user.user_id = user_id
-    user.channel_id = "-100999888"
-    user.bot_token_id = "123456:ABC-test"
-    user.api_key_hash = "abc123"
+def _mock_user():
+    user = MagicMock(spec=User)
+    user.id = USER_ID
+    user.email = "e2e@test.com"
+    user.username = "e2e_user"
+    user.is_active = True
+    user.api_key_hash = hashlib.sha256(API_KEY.encode()).hexdigest()
     user.created_at = datetime.now(timezone.utc)
+    user.updated_at = datetime.now(timezone.utc)
     return user
 
 
+def _mock_project():
+    p = MagicMock(spec=Project)
+    p.id = PROJECT_ID
+    p.user_id = USER_ID
+    p.name = "e2e_project"
+    p.description = "test"
+    p.created_at = datetime.now(timezone.utc)
+    p.updated_at = datetime.now(timezone.utc)
+    return p
+
+
+def _mock_paradox_db(
+    name: str = "test",
+    latest_version: int = 0,
+    latest_message_id: str | None = None,
+    file_hash: str | None = None,
+):
+    pdb = MagicMock(spec=ParadoxDB)
+    pdb.id = DB_ID
+    pdb.project_id = PROJECT_ID
+    pdb.user_id = USER_ID
+    pdb.name = name
+    pdb.description = None
+    pdb.latest_version = latest_version
+    pdb.latest_message_id = latest_message_id
+    pdb.file_hash = file_hash
+    pdb.created_at = datetime.now(timezone.utc)
+    pdb.updated_at = datetime.now(timezone.utc)
+    return pdb
+
+
 def _mock_db_version(
-    user_id: str = USER_ID,
-    database_name: str = "test.db",
-    version: int = 1,
-    message_id: str = "100",
-    file_hash: str = "sha256_default",
-) -> MagicMock:
-    dv = MagicMock(spec=DatabaseVersion)
-    dv.user_id = user_id
-    dv.database_name = database_name
-    dv.latest_version = version
-    dv.latest_message_id = message_id
-    dv.file_hash = file_hash
-    dv.uploaded_at = datetime.now(timezone.utc)
-    return dv
-
-
-def _mock_version_history(
-    user_id: str = USER_ID,
-    database_name: str = "test.db",
     version: int = 1,
     message_id: str = "100",
     file_hash: str = "sha256_default",
     file_size: int = 100,
-) -> MagicMock:
-    vh = MagicMock(spec=VersionHistory)
-    vh.user_id = user_id
-    vh.database_name = database_name
-    vh.version = version
-    vh.message_id = message_id
-    vh.file_hash = file_hash
-    vh.file_size = file_size
-    vh.version_type = "full"
-    vh.uploaded_at = datetime.now(timezone.utc)
-    return vh
+):
+    dv = MagicMock(spec=DatabaseVersion)
+    dv.id = uuid.uuid4()
+    dv.db_id = DB_ID
+    dv.version_number = version
+    dv.file_hash = file_hash
+    dv.file_size = file_size
+    dv.message_id = message_id
+    dv.notes = None
+    dv.created_by = USER_ID
+    dv.created_at = datetime.now(timezone.utc)
+    return dv
 
 
 def _mock_sync_log(
     status: str = "completed",
     operation: str = "upload",
-) -> MagicMock:
+):
     sl = MagicMock(spec=SyncLog)
     sl.request_id = str(uuid.uuid4())
     sl.user_id = USER_ID
@@ -122,61 +141,63 @@ def _mock_sync_log(
 def _make_mock_result(scalars=None, scalar_one=None):
     mock_result = MagicMock()
     mock_result.scalar_one_or_none.return_value = scalar_one
-    if scalars is not None:
-        mock_result.scalars.return_value.all.return_value = scalars
+    mock_result.scalars.return_value.all.return_value = scalars or []
+    mock_result.scalars.return_value.first.return_value = scalar_one
+    mock_result.scalar_one.return_value = scalar_one
     return mock_result
 
 
 class _E2EMockSession:
-    """Stateful mock session that tracks uploaded versions per database.
-
-    Uses compiled SQL params and table name detection to route queries.
-    """
+    """Stateful mock session tracking uploads per database."""
 
     def __init__(self):
         self._versions: dict[str, list[dict]] = {}
-        self._db_versions: dict[str, MagicMock] = {}
+        self._db_versions: dict[str, list[MagicMock]] = {}
+        self._paradox_dbs: dict[str, MagicMock] = {}
         self.added_objects: list = []
 
-    def _key(self, user_id: str, db_name: str) -> str:
-        return f"{user_id}:{db_name}"
+    def _key(self, user_id, db_name: str) -> str:
+        uid = str(user_id) if user_id else ""
+        return f"{uid}:{db_name}"
 
-    def add_upload(
-        self, user_id: str, db_name: str, version: int, message_id: str, file_bytes: bytes
-    ):
+    def add_upload(self, user_id, db_name: str, version: int, message_id: str, file_bytes: bytes):
         file_hash = hashlib.sha256(file_bytes).hexdigest()
         key = self._key(user_id, db_name)
         self._versions.setdefault(key, [])
-        self._versions[key].append(
-            {
-                "version": version,
-                "message_id": message_id,
-                "file_hash": file_hash,
-                "file_size": len(file_bytes),
-            }
+        self._versions[key].append({
+            "version": version,
+            "message_id": message_id,
+            "file_hash": file_hash,
+            "file_size": len(file_bytes),
+        })
+        dv = _mock_db_version(
+            version=version, message_id=message_id, file_hash=file_hash,
+            file_size=len(file_bytes),
         )
-        self._db_versions[key] = _mock_db_version(
-            user_id=user_id,
-            database_name=db_name,
-            version=version,
-            message_id=message_id,
-            file_hash=file_hash,
-        )
+        self._db_versions.setdefault(key, [])
+        self._db_versions[key].append(dv)
+        if key in self._paradox_dbs:
+            self._paradox_dbs[key].latest_version = version
+            self._paradox_dbs[key].latest_message_id = message_id
+            self._paradox_dbs[key].file_hash = file_hash
 
-    def _get_version_entries(self, user_id: str, db_name: str) -> list[dict]:
+    def register_db(self, user_id, db_name: str):
         key = self._key(user_id, db_name)
-        return self._versions.get(key, [])
+        pdb = _mock_paradox_db(name=db_name)
+        self._paradox_dbs[key] = pdb
+        return pdb
 
-    def _get_db_version(self, user_id: str, db_name: str) -> MagicMock | None:
-        key = self._key(user_id, db_name)
-        return self._db_versions.get(key)
+    def _get_version_entries(self, user_id, db_name: str) -> list[dict]:
+        return self._versions.get(self._key(user_id, db_name), [])
 
-    def _get_all_db_versions(self, user_id: str) -> list[MagicMock]:
-        return [
-            dv
-            for key, dv in self._db_versions.items()
-            if key.split(":", 1)[0] == user_id
-        ]
+    def _get_db_versions(self, user_id, db_name: str) -> list[MagicMock]:
+        return self._db_versions.get(self._key(user_id, db_name), [])
+
+    def _get_latest_db_version(self, user_id, db_name: str) -> MagicMock | None:
+        versions = self._get_db_versions(user_id, db_name)
+        if versions:
+            return versions[-1]
+        return None
 
     def _extract_params(self, stmt) -> dict:
         try:
@@ -188,66 +209,84 @@ class _E2EMockSession:
         stmt_str = str(stmt)
         params = self._extract_params(stmt)
 
-        user_id = params.get("user_id_1", "")
-        db_name = params.get("database_name_1", "")
-        version = params.get("version_1")
+        user_id = params.get("user_id_1") or params.get("user_id")
+        db_name = params.get("name_1") or params.get("database_name_1") or params.get("database_name")
+        version = params.get("version_number_1") or params.get("version_number") or params.get("version_1") or params.get("target_version")
+        db_id = params.get("db_id_1") or params.get("db_id") or params.get("id_1") or params.get("id")
 
-        # version_history table
-        if "version_history" in stmt_str:
-            entries = self._get_version_entries(user_id, db_name) if user_id and db_name else []
-
-            if version is not None:
-                for entry in entries:
-                    if entry["version"] == version:
-                        return _make_mock_result(
-                            scalar_one=_mock_version_history(
-                                user_id=user_id,
-                                database_name=db_name,
-                                version=entry["version"],
-                                message_id=entry["message_id"],
-                                file_hash=entry["file_hash"],
-                                file_size=entry["file_size"],
-                            )
-                        )
+        if "paradox_dbs" in stmt_str:
+            # Try match by db_id
+            if db_id:
+                for pdb in self._paradox_dbs.values():
+                    if str(pdb.id) == str(db_id):
+                        return _make_mock_result(scalar_one=pdb)
                 return _make_mock_result(scalar_one=None)
-
-            sorted_entries = sorted(entries, key=lambda e: e["version"], reverse=True)
-            mocks = [
-                _mock_version_history(
-                    user_id=user_id,
-                    database_name=db_name,
-                    version=e["version"],
-                    message_id=e["message_id"],
-                    file_hash=e["file_hash"],
-                    file_size=e["file_size"],
-                )
-                for e in sorted_entries
-            ]
-            return _make_mock_result(scalars=mocks)
-
-        # database_versions table
-        if "database_versions" in stmt_str:
+            # Try match by user_id + name
+            if user_id and db_name:
+                pdb = self._paradox_dbs.get(self._key(user_id, db_name))
+                if pdb:
+                    return _make_mock_result(scalar_one=pdb)
+            # Try match by user_id only (list)
+            if user_id and not db_name:
+                results = [v for k, v in self._paradox_dbs.items() if k.startswith(str(user_id))]
+                return _make_mock_result(scalars=results)
+            # Fallback: return mock for any db_name query
             if db_name:
-                dv = self._get_db_version(user_id, db_name)
-                return _make_mock_result(scalar_one=dv)
-            results = self._get_all_db_versions(user_id)
-            return _make_mock_result(scalars=results if results else [])
+                uid = user_id or str(uuid.uuid4())
+                pdb = _mock_paradox_db(name=db_name)
+                self._paradox_dbs[self._key(uid, db_name)] = pdb
+                return _make_mock_result(scalar_one=pdb)
+            return _make_mock_result(scalar_one=None)
 
-        # sync_log table
+        if "database_versions" in stmt_str:
+            db_id_str = str(db_id) if db_id else None
+            # Match by db_id + version_number
+            if db_id_str and version:
+                for key, dv_list in self._db_versions.items():
+                    for dv in dv_list:
+                        if str(dv.db_id) == db_id_str and dv.version_number == version:
+                            return _make_mock_result(scalar_one=dv)
+                return _make_mock_result(scalar_one=None)
+            # Match by db_id (list all versions)
+            if db_id_str:
+                results = []
+                for dv_list in self._db_versions.values():
+                    for dv in dv_list:
+                        if str(dv.db_id) == db_id_str:
+                            results.append(dv)
+                return _make_mock_result(scalars=results if results else None)
+            # Match by name
+            if db_name:
+                dv = self._get_latest_db_version(user_id, db_name)
+                return _make_mock_result(scalar_one=dv)
+            # Match all for user
+            results = []
+            for key, dv_list in self._db_versions.items():
+                if not user_id or key.startswith(str(user_id)):
+                    results.extend(dv_list)
+            return _make_mock_result(scalars=results if results else None)
+
         if "sync_log" in stmt_str:
             return _make_mock_result(scalar_one=_mock_sync_log())
 
-        # user_channels table
-        if "user_channels" in stmt_str:
+        if "users" in stmt_str:
             return _make_mock_result(scalar_one=_mock_user())
+
+        if "projects" in stmt_str:
+            return _make_mock_result(scalar_one=_mock_project())
 
         return _make_mock_result(scalars=[], scalar_one=None)
 
     def add(self, obj):
         self.added_objects.append(obj)
-        if isinstance(obj, DatabaseVersion):
-            key = self._key(obj.user_id, obj.database_name)
-            self._db_versions[key] = obj
+        if isinstance(obj, ParadoxDB):
+            key = self._key(obj.user_id, obj.name)
+            self._paradox_dbs[key] = obj
+        elif isinstance(obj, DatabaseVersion):
+            for k, pdb in self._paradox_dbs.items():
+                if pdb.id == obj.db_id:
+                    self._db_versions[k] = obj
+                    break
 
     async def flush(self):
         pass
@@ -290,12 +329,14 @@ def mock_auth(mock_session):
 
 
 @pytest.fixture(autouse=True)
-def mock_redis_lock():
-    """Mock the Redis-based upload lock so tests don't need Redis."""
-    with patch("app.routers.upload._upload_lock") as mock_lock:
+def mock_redis_and_rate_limit():
+    """Mock the Redis-based lock and rate limiter so tests don't need Redis."""
+    with patch("app.routers.databases._upload_lock") as mock_lock, \
+         patch("app.routers.databases.rate_limiter") as mock_rl:
         mock_lock.acquire = AsyncMock(return_value=True)
         mock_lock.release = AsyncMock()
-        yield mock_lock
+        mock_rl.check = MagicMock(return_value=True)
+        yield mock_lock, mock_rl
 
 
 # ── 1. Full sync flow: upload → download ────────────────────────────
@@ -305,33 +346,31 @@ def mock_redis_lock():
 async def test_full_sync_flow(client: AsyncClient, mock_auth):
     """Upload a file and download it back; verify content matches."""
     user, session = mock_auth
+    session.register_db(user.id, "sync")
     file_bytes = b"paradox database content v1"
     file_b64 = base64.b64encode(file_bytes).decode()
 
-    with (
-        patch("app.routers.upload.TelegramClient") as MockUploadTG,
-        patch("app.routers.download.TelegramClient") as MockDownloadTG,
-    ):
-        MockUploadTG.return_value.upload_file = AsyncMock(return_value="200")
-        MockDownloadTG.return_value.download_file = AsyncMock(return_value=file_bytes)
+    with patch("app.routers.databases.TelegramClient") as MockTG:
+        MockTG.return_value.upload_file = AsyncMock(return_value="200")
+        MockTG.return_value.download_file = AsyncMock(return_value=file_bytes)
 
         resp_upload = await client.post(
             "/v1/upload",
-            json={"database_name": "sync.db", "file_data": file_b64},
+            json={"database_name": "sync", "file_data": file_b64},
             headers={"X-API-Key": API_KEY},
         )
 
-    assert resp_upload.status_code == 200
+    assert resp_upload.status_code == 200, f"Upload failed: {resp_upload.status_code} {resp_upload.text}"
     upload_data = resp_upload.json()
     assert upload_data["version"] == 1
     assert upload_data["message_id"] == "200"
 
-    with patch("app.routers.download.TelegramClient") as MockDL:
+    with patch("app.routers.databases.TelegramClient") as MockDL:
         MockDL.return_value.download_file = AsyncMock(return_value=file_bytes)
 
         resp_download = await client.get(
             "/v1/download",
-            params={"database_name": "sync.db"},
+            params={"database_name": "sync"},
             headers={"X-API-Key": API_KEY},
         )
 
@@ -348,24 +387,25 @@ async def test_full_sync_flow(client: AsyncClient, mock_auth):
 async def test_upload_then_versions(client: AsyncClient, mock_auth):
     """Verify /versions returns all uploaded versions for a database."""
     user, session = mock_auth
+    session.register_db(user.id, "multi")
 
     v1_bytes = b"version 1 data"
     v2_bytes = b"version 2 data"
     v3_bytes = b"version 3 data"
 
-    session.add_upload(USER_ID, "multi.db", 1, "101", v1_bytes)
-    session.add_upload(USER_ID, "multi.db", 2, "102", v2_bytes)
-    session.add_upload(USER_ID, "multi.db", 3, "103", v3_bytes)
+    session.add_upload(user.id, "multi", 1, "101", v1_bytes)
+    session.add_upload(user.id, "multi", 2, "102", v2_bytes)
+    session.add_upload(user.id, "multi", 3, "103", v3_bytes)
 
     resp = await client.get(
         "/v1/versions",
-        params={"database_name": "multi.db"},
+        params={"database_name": "multi"},
         headers={"X-API-Key": API_KEY},
     )
 
     assert resp.status_code == 200
     data = resp.json()
-    assert data["database_name"] == "multi.db"
+    assert data["database_name"] == "multi"
     assert len(data["versions"]) == 3
     versions = sorted(data["versions"], key=lambda v: v["version"])
     assert versions[0]["version"] == 1
@@ -383,18 +423,20 @@ async def test_upload_then_versions(client: AsyncClient, mock_auth):
 async def test_conflict_detection(client: AsyncClient, mock_auth):
     """Upload v1, then try to upload with client_version=0; expect 409."""
     user, session = mock_auth
+    session.register_db(user.id, "conflict")
+
     file_bytes = b"conflict test data"
     file_b64 = base64.b64encode(file_bytes).decode()
 
-    session.add_upload(USER_ID, "conflict.db", 1, "300", file_bytes)
+    session.add_upload(user.id, "conflict", 1, "300", file_bytes)
 
-    with patch("app.routers.upload.TelegramClient") as MockTG:
+    with patch("app.routers.databases.TelegramClient") as MockTG:
         MockTG.return_value.upload_file = AsyncMock(return_value="301")
 
         resp = await client.post(
             "/v1/upload",
             json={
-                "database_name": "conflict.db",
+                "database_name": "conflict",
                 "file_data": file_b64,
                 "version": 0,
             },
@@ -416,18 +458,20 @@ async def test_conflict_detection(client: AsyncClient, mock_auth):
 async def test_download_specific_version(client: AsyncClient, mock_auth):
     """Upload v1 and v2, then download v1 specifically."""
     user, session = mock_auth
+    session.register_db(user.id, "specific")
+
     v1_bytes = b"version 1 content"
     v2_bytes = b"version 2 content"
 
-    session.add_upload(USER_ID, "specific.db", 1, "400", v1_bytes)
-    session.add_upload(USER_ID, "specific.db", 2, "401", v2_bytes)
+    session.add_upload(user.id, "specific", 1, "400", v1_bytes)
+    session.add_upload(user.id, "specific", 2, "401", v2_bytes)
 
-    with patch("app.routers.download.TelegramClient") as MockTG:
+    with patch("app.routers.databases.TelegramClient") as MockTG:
         MockTG.return_value.download_file = AsyncMock(return_value=v1_bytes)
 
         resp = await client.get(
             "/v1/download",
-            params={"database_name": "specific.db", "version": 1},
+            params={"database_name": "specific", "version": 1},
             headers={"X-API-Key": API_KEY},
         )
 
@@ -443,19 +487,21 @@ async def test_download_specific_version(client: AsyncClient, mock_auth):
 async def test_rollback_flow(client: AsyncClient, mock_auth):
     """Upload v1 and v2, rollback to v1, verify a new version is created."""
     user, session = mock_auth
+    session.register_db(user.id, "rollback")
+
     v1_bytes = b"rollback version 1"
     v2_bytes = b"rollback version 2"
 
-    session.add_upload(USER_ID, "rollback.db", 1, "500", v1_bytes)
-    session.add_upload(USER_ID, "rollback.db", 2, "501", v2_bytes)
+    session.add_upload(user.id, "rollback", 1, "500", v1_bytes)
+    session.add_upload(user.id, "rollback", 2, "501", v2_bytes)
 
-    with patch("app.routers.rollback.TelegramClient") as MockTG:
+    with patch("app.routers.databases.TelegramClient") as MockTG:
         MockTG.return_value.download_file = AsyncMock(return_value=v1_bytes)
         MockTG.return_value.upload_file = AsyncMock(return_value="502")
 
         resp = await client.post(
             "/v1/rollback",
-            json={"database_name": "rollback.db", "target_version": 1},
+            json={"database_name": "rollback", "target_version": 1},
             headers={"X-API-Key": API_KEY},
         )
 
@@ -473,11 +519,11 @@ async def test_rollback_flow(client: AsyncClient, mock_auth):
 async def test_unauthenticated_access(client: AsyncClient):
     """All protected endpoints return 401 without auth."""
     endpoints = [
-        ("GET", "/v1/download", {"database_name": "test.db"}),
-        ("GET", "/v1/versions", {"database_name": "test.db"}),
+        ("GET", "/v1/download", {"database_name": "test"}),
+        ("GET", "/v1/versions", {"database_name": "test"}),
         ("GET", "/v1/status", {}),
-        ("POST", "/v1/upload", {"database_name": "test.db", "file_data": "dGVzdA=="}),
-        ("POST", "/v1/rollback", {"database_name": "test.db", "target_version": 1}),
+        ("POST", "/v1/upload", {"database_name": "test", "file_data": "dGVzdA=="}),
+        ("POST", "/v1/rollback", {"database_name": "test", "target_version": 1}),
     ]
 
     for method, path, body_or_params in endpoints:
@@ -495,9 +541,11 @@ async def test_unauthenticated_access(client: AsyncClient):
 async def test_status_after_upload(client: AsyncClient, mock_auth):
     """Upload a database, then check /status shows correct version info."""
     user, session = mock_auth
+    session.register_db(user.id, "status")
+
     file_bytes = b"status test data"
 
-    session.add_upload(USER_ID, "status.db", 1, "600", file_bytes)
+    session.add_upload(user.id, "status", 1, "600", file_bytes)
 
     resp = await client.get(
         "/v1/status",
@@ -506,10 +554,10 @@ async def test_status_after_upload(client: AsyncClient, mock_auth):
 
     assert resp.status_code == 200
     data = resp.json()
-    assert data["user_id"] == USER_ID
+    assert data["user_id"] == str(user.id)
     assert len(data["databases"]) == 1
     db_info = data["databases"][0]
-    assert db_info["name"] == "status.db"
+    assert db_info["name"] == "status"
     assert db_info["latest_version"] == 1
     assert db_info["latest_message_id"] == "600"
     assert db_info["pending_changesets"] == 0

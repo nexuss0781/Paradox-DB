@@ -944,6 +944,6 @@ async def legacy_rollback(
 
     return {
         "request_id": str(uuid.uuid4()),
-        "rolled_back_to": new_version,
+        "rolled_back_to": target_version,
         "new_message_id": msg_id,
     }
