@@ -1,6 +1,7 @@
 """parad configuration management."""
 
 import json
+import os
 from pathlib import Path
 from parad.types import Config
 
@@ -14,6 +15,7 @@ DEFAULT_CONFIG = {
         "cipher": "aes-256-cbc",
         "kdf_iterations": 256000,
         "page_size": 4096,
+        "passphrase": "default",
     },
     "sync": {
         "gateway_url": "https://paradox-db.onrender.com/v1",
@@ -46,7 +48,13 @@ def _deep_merge(base: dict, override: dict) -> dict:
 
 
 def load_config() -> Config:
-    """Load config from ~/.paradox/config.json, merged with defaults."""
+    """Load config from ~/.paradox/config.json, merged with defaults.
+    
+    Environment variables can override config values:
+    - PARADOX_PASSPHRASE → encryption.passphrase
+    - PARADOX_GATEWAY → sync.gateway_url
+    - PARADOX_DATABASE → database_path
+    """
     user_config = {}
     if CONFIG_FILE.exists():
         try:
@@ -54,6 +62,15 @@ def load_config() -> Config:
         except (json.JSONDecodeError, OSError):
             pass
     merged = _deep_merge(DEFAULT_CONFIG, user_config)
+    
+    # Check environment variables
+    if "PARADOX_PASSPHRASE" in os.environ:
+        merged["encryption"]["passphrase"] = os.environ["PARADOX_PASSPHRASE"]
+    if "PARADOX_GATEWAY" in os.environ:
+        merged["sync"]["gateway_url"] = os.environ["PARADOX_GATEWAY"]
+    if "PARADOX_DATABASE" in os.environ:
+        merged["database_path"] = os.environ["PARADOX_DATABASE"]
+    
     return Config(**merged)
 
 
@@ -91,3 +108,18 @@ def gateway_db_name(db_path) -> str:
     if name.endswith(".db"):
         name = name[:-3]
     return name
+
+
+def get_passphrase() -> str:
+    """Get the encryption passphrase from config."""
+    config = load_config()
+    return config.encryption.passphrase
+
+
+def get_connection_url(name: str) -> str:
+    """Get a connection URL for a database.
+    
+    Returns: parad://local/{name}?passphrase={passphrase}
+    """
+    passphrase = get_passphrase()
+    return f"parad://local/{name}?passphrase={passphrase}"

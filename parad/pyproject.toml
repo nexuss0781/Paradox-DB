@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "parad"
-version = "0.3.0"
-description = "Encrypted local-first SQLite with Telegram cloud sync"
+version = "0.4.0"
+description = "Drop-in encrypted database with cloud sync — connect() and go"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [

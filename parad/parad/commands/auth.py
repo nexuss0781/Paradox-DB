@@ -1,6 +1,7 @@
 """parad auth — Register, login, and manage authentication."""
 
 import click
+from click import ClickException
 from parad.config import load_config, save_config, set_config_value
 from parad.gateway import GatewayClient, GatewayError
 
@@ -47,6 +48,36 @@ def login(email, password):
     except GatewayError as e:
         click.echo(f"✗ Login failed: {e}")
         raise SystemExit(1)
+
+
+def _ensure_auth(gw):
+    """Ensure user is authenticated. Prompt for credentials if needed."""
+    if gw.api_key:
+        try:
+            gw.get_me()
+            return
+        except GatewayError:
+            pass
+    
+    click.echo("Authentication required.")
+    email = click.prompt("Email")
+    password = click.prompt("Password", hide_input=True)
+    
+    try:
+        result = gw.login(email, password)
+        token = result.get("access_token") or result.get("api_key")
+        if token:
+            set_config_value("sync.api_key", token)
+            click.echo("✓ Authentication successful")
+        else:
+            raise ClickException("Login succeeded but no token received")
+    except GatewayError as e:
+        raise ClickException(f"Authentication failed: {e}")
+
+
+def _require_auth(gw):
+    """Require authentication. Raises ClickException if auth fails."""
+    _ensure_auth(gw)
 
 
 @auth_group.command("status")
