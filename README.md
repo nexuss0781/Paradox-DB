@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/Paradox--DB-1.0.3-blue?style=for-the-badge&logo=sqlite&logoColor=white" alt="Paradox-DB">
+  <img src="https://img.shields.io/badge/Paradox--DB-1.0.4-blue?style=for-the-badge&logo=sqlite&logoColor=white" alt="Paradox-DB">
 </p>
 
 <h1 align="center">Paradox-DB</h1>
@@ -584,6 +584,91 @@ If no token is set and stdin is not a TTY, parad exits with a clear error:
 ```
 Error: Not authenticated. Set PARADOX_API_KEY environment variable or run 'parad auth login' first.
 ```
+
+---
+
+## Deploy on Render (FastAPI example)
+
+Full working example of a chat API using parad as the database, deployed on Render:
+
+**`requirements.txt`:**
+```
+parad>=1.0.4
+fastapi>=0.100
+uvicorn>=0.23
+```
+
+**`app.py`:**
+```python
+import os
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, HTTPException
+from parad import connect
+
+db = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global db
+    # pull_on_startup=True: downloads from gateway if local file missing
+    # auto_sync=False: no background thread (safe for web servers)
+    db = connect(
+        "chatdb",
+        passphrase=os.environ["PARADOX_PASSPHRASE"],
+        auto_sync=False,
+        pull_on_startup=True,
+    )
+
+    # Schema setup
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            room TEXT NOT NULL,
+            user TEXT NOT NULL,
+            text TEXT NOT NULL,
+            ts DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    db.commit()
+    yield
+
+    # Push to gateway before shutdown
+    if db:
+        db.push()
+        db.close()
+
+app = FastAPI(lifespan=lifespan)
+
+@app.post("/rooms/{room}/send")
+async def send_message(room: str, user: str, text: str):
+    db.execute(
+        "INSERT INTO messages (room, user, text) VALUES (?, ?, ?)",
+        (room, user, text),
+    )
+    db.commit()
+    return {"status": "ok"}
+
+@app.get("/rooms/{room}/messages")
+async def get_messages(room: str, limit: int = 50):
+    rows = db.execute(
+        "SELECT * FROM messages WHERE room = ? ORDER BY ts DESC LIMIT ?",
+        (room, limit),
+    )
+    return rows
+```
+
+**Render environment variables:**
+```
+PARADOX_API_KEY=eyJ...       # from parad auth login
+PARADOX_PASSPHRASE=secret    # encryption key
+```
+
+**How it survives deploys:**
+
+1. **Startup**: `pull_on_startup=True` downloads the latest encrypted DB from the gateway
+2. **Running**: all queries hit the local encrypted SQLite (fast, no network)
+3. **Shutdown**: `db.push()` uploads the updated DB back to the gateway
+4. **Redeploy**: step 1 pulls the latest version again — no data lost
 
 ---
 
