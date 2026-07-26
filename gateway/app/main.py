@@ -83,26 +83,3 @@ app.include_router(databases.router, tags=["databases"])
 async def root():
     await log_operation("gateway", "Gateway info requested", "info")
     return {"service": "paradox-db-gateway", "version": "2.0.0"}
-
-
-@app.post("/admin/migrate")
-async def run_migration():
-    """One-time migration: drop old tables, recreate with new schema. Remove after use."""
-    from sqlalchemy import text
-    from app.database import async_session_factory
-    results = []
-    async with async_session_factory() as session:
-        for table in ["conflict_log", "sync_log", "version_history", "database_versions", "user_channels"]:
-            try:
-                await session.execute(text(f"DROP TABLE IF EXISTS {table} CASCADE"))
-                results.append(f"dropped {table}")
-            except Exception as e:
-                results.append(f"error dropping {table}: {e}")
-        await session.commit()
-    # Now recreate all tables from models
-    from app.database import engine
-    from app.models import Base
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    results.append("recreated all tables from models")
-    return {"migration": "complete", "steps": results}
