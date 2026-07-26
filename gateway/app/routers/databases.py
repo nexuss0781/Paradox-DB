@@ -88,7 +88,7 @@ async def create_database(
 
     return DatabaseResponse(
         id=str(paradox_db.id), project_id=str(paradox_db.project_id), name=paradox_db.name,
-        description=paradox_db.description, latest_version=0,
+        description=paradox_db.description, latest_version=0, file_hash=None,
         created_at=paradox_db.created_at.isoformat(),
         updated_at=paradox_db.updated_at.isoformat(),
     )
