@@ -14,3 +14,4 @@ __pycache__/
 *.egg-info/
 nginx/certs/
 gateway/.venv/
+parad/build/
