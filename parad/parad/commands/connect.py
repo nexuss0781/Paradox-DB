@@ -10,7 +10,10 @@ from parad.watcher import is_running, get_daemon_pid, start_daemon
 
 
 def _ensure_auth(config):
-    """Auto-authenticate: prompt for credentials if no valid token."""
+    """Auto-authenticate: prompt for credentials if no valid token.
+
+    In non-interactive mode (CI/cloud), raises an error instead of prompting.
+    """
     gw = GatewayClient(config.sync.gateway_url, config.sync.api_key)
 
     if gw.api_key:
@@ -19,6 +22,13 @@ def _ensure_auth(config):
             return gw
         except GatewayError:
             pass
+
+    # Non-interactive mode: raise clear error
+    import sys
+    if not sys.stdin.isatty():
+        raise click.ClickException(
+            "Not authenticated. Set PARADOX_API_KEY environment variable or run 'parad auth login' first."
+        )
 
     click.echo("Authentication required.")
     email = click.prompt("Email")
