@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/Paradox--DB-0.4.0-blue?style=for-the-badge&logo=sqlite&logoColor=white" alt="Paradox-DB">
+  <img src="https://img.shields.io/badge/Paradox--DB-1.0.2-blue?style=for-the-badge&logo=sqlite&logoColor=white" alt="Paradox-DB">
 </p>
 
 <h1 align="center">Paradox-DB</h1>
@@ -13,7 +13,7 @@
   <a href="#-sdk">SDK</a> •
   <a href="#-cli">CLI</a> •
   <a href="#-architecture">Architecture</a> •
-  <a href="#-deployment">Deploy</a>
+  <a href="#-gateway">Gateway</a>
 </p>
 
 <p align="center">
@@ -41,6 +41,19 @@ db.commit()  # auto-syncs to cloud
 ```
 
 **No AWS. No Docker. No config files.** Just `pip install parad` and your data syncs through Telegram's infrastructure — free, encrypted, censorship-resistant.
+
+---
+
+## Platform Support
+
+| Platform | Status | Install |
+|----------|--------|---------|
+| **Linux** (x86_64) | Full | `pip install parad` |
+| **macOS** (Intel + Apple Silicon) | Full | `pip install parad` |
+| **Windows** (x86_64) | Full | `pip install parad` |
+| **Python 3.10+** | Required | — |
+
+CLI, SDK, and gateway all run on any platform Python supports. Gateway deploys to Render (Linux containers).
 
 ---
 
@@ -198,79 +211,147 @@ parts = parse_url(url)
 
 ## CLI
 
-### Authentication
+All 33 commands and subcommands:
 
-```bash
-parad auth register          # register (prompts for email, username, password)
-parad auth login             # login (prompts for email, password)
-parad auth status            # show current user
+```
+parad [--version]
+│
+├── connect <NAME>                Connect to a database + start sync daemon
+│   --passphrase                  Encryption passphrase (env: PARADOX_PASSPHRASE)
+│   --no-watch                    Don't start auto-sync daemon
+│   --watch                       Keep running in foreground
+│
+├── init <NAME>                   One-step bootstrap: auth + project + DB + local + push
+│   --passphrase                  Encryption passphrase
+│   --gateway                     Override gateway URL
+│   --project                     Project name (creates if not found)
+│   --watch                       Start daemon after init
+│
+├── push                          Push local database to gateway
+│   --passphrase                  Encryption passphrase
+│
+├── pull [VERSION]                Pull database from gateway (optional: specific version)
+│   --passphrase                  Encryption passphrase
+│
+├── sync                          Push + pull (bidirectional)
+│   --passphrase                  Encryption passphrase
+│
+├── status                        Show local vs remote sync state
+│
+├── versions                      List remote versions of current database
+│   --name/-n                     Database name
+│
+├── rollback <VERSION>            Roll back to a previous version + pull locally
+│   --passphrase                  Encryption passphrase
+│
+├── exec <SQL>                    Execute raw SQL
+│   --passphrase                  Encryption passphrase
+│
+├── insert <TABLE> <DATA_JSON>    Insert a row from JSON
+│   --passphrase                  Encryption passphrase
+│
+├── select <TABLE> [WHERE_JSON]   Query rows (optional JSON WHERE)
+│   --passphrase                  Encryption passphrase
+│
+├── update <TABLE> <SET> <WHERE>  Update rows with JSON SET and WHERE
+│   --passphrase                  Encryption passphrase
+│
+├── delete <TABLE> <WHERE_JSON>   Delete rows matching JSON WHERE
+│   --passphrase                  Encryption passphrase
+│
+├── shell                         Interactive SQL REPL (exit: quit, \q)
+│   --passphrase                  Encryption passphrase
+│
+├── watch                         Manage auto-sync daemon
+│   --passphrase                  Encryption passphrase
+│   --stop                        Stop the running daemon
+│   --status                      Show daemon PID / status
+│
+├── auth                          Authentication group
+│   register                      Create account (prompts for email, username, password)
+│       --email                   Email (prompted)
+│       --username                Username (prompted)
+│       --password                Password (prompted, hidden)
+│   login                         Log in (prompts for email, password)
+│       --email                   Email (prompted)
+│       --password                Password (prompted, hidden)
+│   status                        Show current logged-in user
+│
+├── config                        Configuration group
+│   show                          Print current config as JSON
+│   set <KEY> <VALUE>             Set a config value (dotted path, e.g. sync.api_key)
+│
+├── project                       Project management group
+│   list                          List all projects
+│   create <NAME>                 Create a project
+│       --description/-d          Description text
+│   get <NAME_OR_ID>              Get project details
+│   delete <NAME_OR_ID>          Delete project + all databases
+│       --yes                     Skip confirmation
+│
+├── db                            Database management group
+│   list <PROJECT>                List databases in a project
+│   create <PROJECT> <NAME>       Create a database in a project
+│       --description/-d          Description text
+│   get <DATABASE_ID>             Get database details
+│   delete <DATABASE_ID>          Delete database + all versions
+│       --yes                     Skip confirmation
+│
+├── version                       Version management group
+│   list <DATABASE_ID>            List all versions of a database
+│   diff <DATABASE_ID> <A> <B>   Compare two versions (hash, size, identical)
+│
+└── backup                        Backup management group
+    create <DATABASE_ID> <NAME>   Create a named backup at current version
+        --notes/-n                Optional notes
+    list <DATABASE_ID>            List all backups
+    restore <DATABASE_ID> <ID>    Restore from backup (creates new version)
+        --yes                     Skip confirmation
 ```
 
-Auto-auth: commands prompt for login if not authenticated.
-
-### Database Setup
+### Examples
 
 ```bash
-parad init <name>                    # one-step: auth + project + DB + local + push
-parad init <name> --project <proj>   # specify project name
-parad init <name> --watch            # start auto-sync daemon after init
-parad connect <name>                 # connect to existing DB + start daemon
-parad connect <name> --no-watch      # connect without daemon
-parad url                            # show connection URL
-```
+# Full workflow: init → use → manage
+parad auth register
+parad init users --project myapp
+parad exec "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)"
+parad insert users '{"name": "Alice", "email": "alice@example.com"}'
+parad insert users '{"name": "Bob", "email": "bob@example.com"}'
+parad select users
+parad select users '{"name": "Alice"}'
+parad update users '{"email": "alice@new.com"}' '{"id": 1}'
+parad delete users '{"id": 2}'
+parad push
+parad status
 
-### Data Operations
-
-```bash
-parad exec "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)"
-parad insert t '{"name": "Alice"}'
-parad select t
-parad select t '{"name": "Alice"}'   # with WHERE clause
-parad update t '{"name": "Bob"}' '{"id": 1}'
-parad delete t '{"id": 1}'
-```
-
-### Sync & Versions
-
-```bash
-parad push              # push local to cloud
-parad pull              # pull latest from cloud
-parad sync              # push + pull
-parad status            # show sync state
-parad versions          # list all versions
-parad rollback          # rollback to previous version
-```
-
-### Project & Database Management
-
-```bash
-parad project create <name>
+# Project management
 parad project list
-parad project get <id>
-parad project delete <id>
+parad project create myapp -d "My application"
+parad db list myapp
+parad db create myapp analytics
 
-parad db create <project> <name>
-parad db list <project>
-parad db get <id>
-parad db delete <id>
-```
+# Version management
+parad versions
+parad rollback 3
+parad version list <database_id>
+parad version diff <database_id> 1 3
 
-### Backups
-
-```bash
-parad backup create <db_id> <name> -n "before migration"
+# Backups
+parad backup create <db_id> before-migration -n "Pre-migration snapshot"
 parad backup list <db_id>
 parad backup restore <db_id> <backup_id>
-```
 
-### Advanced
+# Interactive SQL
+parad shell
+parad> SELECT * FROM users;
+parad> .quit
 
-```bash
-parad shell              # interactive SQL REPL
-parad config show        # show all config
-parad config set key val # set config value
-parad watch              # start sync daemon (foreground)
-parad watch stop         # stop daemon
+# Auto-sync daemon
+parad connect users --watch    # foreground
+parad watch                    # background
+parad watch --status           # check PID
+parad watch --stop             # kill daemon
 ```
 
 ---
@@ -336,7 +417,7 @@ The encryption key **never leaves your machine**. The gateway stores raw SQLite 
 
 ## Gateway
 
-### Deploy to Render
+### Deploy
 
 The gateway is live at **https://paradox-db.onrender.com**
 
@@ -360,20 +441,55 @@ uvicorn app.main:app --reload --port 8000
 
 ### API Endpoints
 
+**Auth**
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/v1/auth/register` | Register user |
 | `POST` | `/v1/auth/login` | Login |
 | `GET` | `/v1/auth/me` | Current user |
-| `GET/POST` | `/v1/projects` | List/create projects |
-| `GET/POST` | `/v1/projects/{id}/databases` | List/create databases |
-| `GET/PUT/DELETE` | `/v1/databases/{id}` | Database CRUD |
+
+**Projects**
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/v1/projects` | List projects |
+| `POST` | `/v1/projects` | Create project |
+| `GET` | `/v1/projects/{id}` | Get project |
+| `PUT` | `/v1/projects/{id}` | Update project |
+| `DELETE` | `/v1/projects/{id}` | Delete project |
+
+**Databases**
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/v1/projects/{id}/databases` | List databases |
+| `POST` | `/v1/projects/{id}/databases` | Create database |
+| `GET` | `/v1/databases/{id}` | Get database |
+| `PUT` | `/v1/databases/{id}` | Update database |
+| `DELETE` | `/v1/databases/{id}` | Delete database |
+
+**Versions & Sync**
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/v1/databases/{id}/versions` | List versions |
+| `GET` | `/v1/databases/{id}/versions/{n}` | Get version |
+| `GET` | `/v1/databases/{id}/diff` | Compare versions |
 | `POST` | `/v1/upload` | Upload database |
 | `GET` | `/v1/download` | Download database |
 | `GET` | `/v1/status` | Sync status |
 | `GET` | `/v1/versions` | Version history |
 | `POST` | `/v1/rollback` | Rollback to version |
+
+**Backups**
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/v1/databases/{id}/backups` | Create backup |
+| `GET` | `/v1/databases/{id}/backups` | List backups |
+| `POST` | `/v1/databases/{id}/backups/{bid}/restore` | Restore backup |
+
+**System**
+| Method | Path | Description |
+|--------|------|-------------|
 | `GET` | `/test` | Run E2E test suite |
+| `GET` | `/health` | Health check |
 
 ---
 
@@ -412,14 +528,22 @@ Located at `~/.paradox/config.json`:
 ## Testing
 
 ```bash
-# Gateway E2E test (live)
+# Gateway E2E test (live) — all 10 steps
 curl https://paradox-db.onrender.com/test
 
 # Gateway unit tests
 cd gateway && python -m pytest tests/ -v
 
-# Client tests
-python -c "from parad import connect; db = connect('test', passphrase='x'); db.execute('SELECT 1'); db.close()"
+# Quick SDK smoke test
+python3 -c "
+from parad import connect
+db = connect('_test', passphrase='x')
+db.execute('CREATE TABLE t (id INTEGER PRIMARY KEY)')
+db.execute('INSERT INTO t VALUES (1)')
+db.commit()
+print(db.execute('SELECT * FROM t'))
+db.close()
+"
 ```
 
 ---
@@ -439,39 +563,47 @@ python -c "from parad import connect; db = connect('test', passphrase='x'); db.e
 
 ```
 Paradox-DB/
-├── parad/                      # Python SDK + CLI (PyPI: parad)
+├── parad/                          # Python SDK + CLI (PyPI: parad)
 │   └── parad/
-│       ├── __init__.py         # exports connect(), ParadConnection
-│       ├── cli.py              # 20+ CLI commands
-│       ├── connection.py       # SDK: connect(), ParadConnection, SyncDaemon
-│       ├── engine.py           # encrypted SQLite engine
-│       ├── crypto.py           # AES-256-CBC encryption
-│       ├── gateway.py          # HTTP client for gateway API
-│       ├── watcher.py          # background sync daemon
-│       ├── state.py            # sync state tracker
-│       ├── config.py           # configuration management
-│       ├── types.py            # Pydantic models
-│       └── commands/           # CLI command implementations
-│           ├── auth.py         # register, login, status
-│           ├── init.py         # smart init (auto project+DB)
-│           ├── connect.py      # connect + daemon
-│           ├── sync.py         # push, pull, sync
-│           ├── query.py        # exec, insert, select, update, delete
-│           └── ...
-├── gateway/                    # FastAPI gateway (Render-deployed)
+│       ├── __init__.py             # exports connect(), ParadConnection
+│       ├── cli.py                  # 33 CLI commands (Click)
+│       ├── connection.py           # SDK: connect(), ParadConnection, SyncDaemon
+│       ├── engine.py               # encrypted SQLite engine
+│       ├── crypto.py               # AES-256-CBC encryption
+│       ├── gateway.py              # HTTP client for gateway API
+│       ├── watcher.py              # background sync daemon
+│       ├── state.py                # sync state tracker
+│       ├── config.py               # configuration management
+│       ├── types.py                # Pydantic models
+│       └── commands/
+│           ├── __init__.py         # group registration
+│           ├── auth.py             # register, login, status
+│           ├── init.py             # smart init (auto project+DB)
+│           ├── connect.py          # connect + daemon
+│           ├── sync.py             # push, pull, sync
+│           ├── query.py            # exec, insert, select, update, delete
+│           ├── status.py           # status, versions, rollback
+│           ├── shell.py            # interactive SQL REPL
+│           ├── watch.py            # daemon management
+│           ├── projects.py         # project CRUD
+│           ├── databases.py        # database CRUD
+│           ├── versions.py         # version list, diff
+│           ├── backups.py          # backup create, list, restore
+│           └── config_cmd.py       # config show, set
+├── gateway/                        # FastAPI gateway (Render-deployed)
 │   ├── app/
-│   │   ├── main.py             # FastAPI app, v2.0.0
-│   │   ├── auth.py             # JWT + bcrypt
-│   │   ├── models.py           # SQLAlchemy models
-│   │   ├── config.py           # Pydantic settings
+│   │   ├── main.py                 # FastAPI app, v2.0.0
+│   │   ├── auth.py                 # JWT + bcrypt
+│   │   ├── models.py               # SQLAlchemy models
+│   │   ├── config.py               # Pydantic settings
 │   │   └── routers/
-│   │       ├── auth.py         # register, login, me
-│   │       ├── projects.py     # project CRUD
-│   │       ├── databases.py    # DB CRUD + versions + sync + rollback
-│   │       ├── notifications.py # SSE real-time
-│   │       └── test.py         # live E2E test suite
+│   │       ├── auth.py             # register, login, me
+│   │       ├── projects.py         # project CRUD
+│   │       ├── databases.py        # DB CRUD + versions + sync + rollback + legacy
+│   │       ├── notifications.py    # SSE real-time
+│   │       └── test.py             # live E2E test suite (10/10)
 │   └── tests/
-│       └── test_e2e.py         # unit tests (7/7)
+│       └── test_e2e.py             # unit tests (7/7)
 └── README.md
 ```
 
