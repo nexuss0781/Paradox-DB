@@ -51,18 +51,28 @@ def login(email, password):
 
 
 def _ensure_auth(gw):
-    """Ensure user is authenticated. Prompt for credentials if needed."""
+    """Ensure user is authenticated. Prompt for credentials if needed.
+
+    In non-interactive mode (CI/cloud), raises an error instead of prompting.
+    """
     if gw.api_key:
         try:
             gw.get_me()
             return
         except GatewayError:
             pass
-    
+
+    # Non-interactive mode: raise clear error
+    import sys
+    if not sys.stdin.isatty():
+        raise ClickException(
+            "Not authenticated. Set PARADOX_API_KEY environment variable or run 'parad auth login' first."
+        )
+
     click.echo("Authentication required.")
     email = click.prompt("Email")
     password = click.prompt("Password", hide_input=True)
-    
+
     try:
         result = gw.login(email, password)
         token = result.get("access_token") or result.get("api_key")

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/Paradox--DB-1.0.2-blue?style=for-the-badge&logo=sqlite&logoColor=white" alt="Paradox-DB">
+  <img src="https://img.shields.io/badge/Paradox--DB-1.0.3-blue?style=for-the-badge&logo=sqlite&logoColor=white" alt="Paradox-DB">
 </p>
 
 <h1 align="center">Paradox-DB</h1>
@@ -497,11 +497,34 @@ uvicorn app.main:app --reload --port 8000
 
 ### Environment Variables
 
+All parad behavior is configurable via environment variables. These override any values in `~/.paradox/config.json`.
+
 ```bash
-PARADOX_PASSPHRASE="secret"     # default encryption passphrase
+# Authentication (for CI/cloud — no interactive prompts)
+PARADOX_API_KEY="eyJ..."          # API token from parad auth login
+
+# Encryption
+PARADOX_PASSPHRASE="secret"       # default encryption passphrase
+
+# Gateway
 PARADOX_GATEWAY="https://paradox-db.onrender.com/v1"  # gateway URL
+
+# Database
 PARADOX_DATABASE="~/.paradox/mydb.db"  # override DB path
-DATABASE_URL="parad://local/mydb?passphrase=secret"  # connection string
+
+# Connection string (parsed by SDK)
+DATABASE_URL="parad://local/mydb?passphrase=secret"
+```
+
+### .env File Support
+
+parad automatically loads `.env` files from the current directory (if `python-dotenv` is installed — included by default):
+
+```bash
+# .env
+PARADOX_API_KEY=eyJ...
+PARADOX_PASSPHRASE=mysecret
+PARADOX_GATEWAY=https://paradox-db.onrender.com/v1
 ```
 
 ### Config File
@@ -521,6 +544,45 @@ Located at `~/.paradox/config.json`:
     "api_key": "eyJ..."
   }
 }
+```
+
+### Cloud / CI Deployment
+
+For non-interactive environments (Render, GitHub Actions, Docker, etc.), set `PARADOX_API_KEY` as an environment variable. All commands will use it automatically without prompting.
+
+**Render:**
+```bash
+# Set in Render dashboard → Environment
+PARADOX_API_KEY=eyJ...
+PARADOX_PASSPHRASE=mysecret
+```
+
+**GitHub Actions:**
+```yaml
+env:
+  PARADOX_API_KEY: ${{ secrets.PARADOX_API_KEY }}
+  PARADOX_PASSPHRASE: ${{ secrets.PARADOX_PASSPHRASE }}
+steps:
+  - run: parad push
+```
+
+**Docker:**
+```bash
+docker run -e PARADOX_API_KEY=eyJ... -e PARADOX_PASSPHRASE=secret myapp
+```
+
+**Shell / script:**
+```bash
+export PARADOX_API_KEY="eyJ..."
+export PARADOX_PASSPHRASE="secret"
+parad push
+parad pull
+parad status
+```
+
+If no token is set and stdin is not a TTY, parad exits with a clear error:
+```
+Error: Not authenticated. Set PARADOX_API_KEY environment variable or run 'parad auth login' first.
 ```
 
 ---

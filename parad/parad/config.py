@@ -36,6 +36,15 @@ DEFAULT_CONFIG = {
 }
 
 
+def _load_dotenv():
+    """Load .env file from current directory or home directory if python-dotenv is available."""
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(override=False)
+    except ImportError:
+        pass
+
+
 def _deep_merge(base: dict, override: dict) -> dict:
     """Deep merge override into base."""
     result = base.copy()
@@ -49,12 +58,17 @@ def _deep_merge(base: dict, override: dict) -> dict:
 
 def load_config() -> Config:
     """Load config from ~/.paradox/config.json, merged with defaults.
-    
+
     Environment variables can override config values:
     - PARADOX_PASSPHRASE → encryption.passphrase
-    - PARADOX_GATEWAY → sync.gateway_url
-    - PARADOX_DATABASE → database_path
+    - PARADOX_GATEWAY    → sync.gateway_url
+    - PARADOX_DATABASE   → database_path
+    - PARADOX_API_KEY    → sync.api_key
+
+    .env files are loaded automatically if python-dotenv is installed.
     """
+    _load_dotenv()
+
     user_config = {}
     if CONFIG_FILE.exists():
         try:
@@ -62,15 +76,17 @@ def load_config() -> Config:
         except (json.JSONDecodeError, OSError):
             pass
     merged = _deep_merge(DEFAULT_CONFIG, user_config)
-    
-    # Check environment variables
+
+    # Check environment variables (env vars always win over file config)
     if "PARADOX_PASSPHRASE" in os.environ:
         merged["encryption"]["passphrase"] = os.environ["PARADOX_PASSPHRASE"]
     if "PARADOX_GATEWAY" in os.environ:
         merged["sync"]["gateway_url"] = os.environ["PARADOX_GATEWAY"]
     if "PARADOX_DATABASE" in os.environ:
         merged["database_path"] = os.environ["PARADOX_DATABASE"]
-    
+    if "PARADOX_API_KEY" in os.environ:
+        merged["sync"]["api_key"] = os.environ["PARADOX_API_KEY"]
+
     return Config(**merged)
 
 
