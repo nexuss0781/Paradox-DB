@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "parad"
+version = "0.2.0"
+description = "Encrypted local-first SQLite with Telegram cloud sync"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    { name = "nexuss0781", email = "nexuss0781@gmail.com" },
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Database",
+    "Topic :: Security :: Cryptography",
+]
+dependencies = [
+    "click>=8.0",
+    "httpx>=0.25",
+    "cryptography>=41.0",
+    "pydantic>=2.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/nexuss0781/Paradox-DB"
+Repository = "https://github.com/nexuss0781/Paradox-DB"
+Issues = "https://github.com/nexuss0781/Paradox-DB/issues"
+
+[project.scripts]
+parad = "parad.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["parad*"]

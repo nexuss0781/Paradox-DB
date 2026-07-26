@@ -93,6 +93,12 @@ async def download(
         await log_operation("download", f"Error: {database_name} — {exc}", "fail")
         raise HTTPException(status_code=500, detail="Internal download error")
 
+    # Optional gateway-side decryption
+    encryption_key = request.query_params.get("encryption_key", "")
+    if encryption_key:
+        from app.crypto import decrypt_data
+        file_bytes = decrypt_data(file_bytes, encryption_key)
+
     await log_operation(
         "download",
         f"File received from Telegram: {database_name} v{resolved_version} msg={message_id} {len(file_bytes)}B",

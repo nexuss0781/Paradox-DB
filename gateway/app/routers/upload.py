@@ -106,6 +106,12 @@ async def upload(
                 pass
             return JSONResponse(status_code=400, content={"error": "invalid base64 in file_data"})
 
+    # Optional gateway-side encryption
+    encryption_key = body.get("encryption_key", "")
+    if encryption_key:
+        from app.crypto import encrypt_data
+        file_bytes = encrypt_data(file_bytes, encryption_key)
+
     if not rate_limiter.check(uid):
         try:
             await log_operation("upload", f"Rate limited: user {uid}", "warn")
@@ -274,6 +280,10 @@ async def upload(
         duration_ms = (time.time() - start) * 1000
         sync_upload_latency_ms.observe(duration_ms)
         sync_uploads_success.inc()
+
+        # Notify any listening clients
+        from app.routers.notifications import notify_user
+        notify_user(uid, database_name, new_version, message_id)
 
         await log_operation(
             "upload",
