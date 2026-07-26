@@ -21,11 +21,13 @@ def register(email, username, password):
     gw = GatewayClient(config.sync.gateway_url)
     try:
         result = gw.register_email(email, username, password)
-        set_config_value("sync.api_key", result.access_token)
-        click.echo(f"Registered as {result.username} ({result.email})")
-        click.echo(f"  User ID: {result.user_id}")
+        token = result.get("access_token", "")
+        if token:
+            set_config_value("sync.api_key", token)
+        click.echo(f"✓ Registered as {result.get('username', '')} ({result.get('email', '')})")
+        click.echo(f"  User ID: {result.get('user_id', '')}")
     except GatewayError as e:
-        click.echo(f"Registration failed: {e}")
+        click.echo(f"✗ Registration failed: {e}")
         raise SystemExit(1)
 
 
@@ -38,10 +40,12 @@ def login(email, password):
     gw = GatewayClient(config.sync.gateway_url)
     try:
         result = gw.login(email, password)
-        set_config_value("sync.api_key", result.access_token)
-        click.echo(f"Logged in as {result.username}")
+        token = result.get("access_token", "")
+        if token:
+            set_config_value("sync.api_key", token)
+        click.echo(f"✓ Logged in as {result.get('username', '')}")
     except GatewayError as e:
-        click.echo(f"Login failed: {e}")
+        click.echo(f"✗ Login failed: {e}")
         raise SystemExit(1)
 
 

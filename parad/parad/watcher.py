@@ -10,7 +10,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from parad.config import load_config, CONFIG_DIR
+from parad.config import load_config, CONFIG_DIR, gateway_db_name
 from parad.crypto import encrypt_file
 from parad.engine import Engine
 from parad.gateway import GatewayClient, GatewayError
@@ -70,7 +70,7 @@ class Watcher:
         self.config = load_config()
         self.passphrase = passphrase
         self.db_path = Path(self.config.database_path).expanduser()
-        self.db_name = self.db_path.name
+        self.db_name = gateway_db_name(self.db_path)
         self.push_interval = push_interval
         self.pull_interval = pull_interval
         self.debounce_seconds = debounce_seconds

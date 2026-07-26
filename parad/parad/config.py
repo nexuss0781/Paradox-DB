@@ -79,3 +79,15 @@ def set_config_value(key: str, value: str):
     else:
         current[keys[-1]] = value
     save_config(Config(**d))
+
+
+def gateway_db_name(db_path) -> str:
+    """Strip .db suffix from a database filename to get the gateway name.
+    
+    Local file: ~/.paradox/main.db → gateway name: main
+    """
+    from pathlib import Path
+    name = Path(db_path).name
+    if name.endswith(".db"):
+        name = name[:-3]
+    return name

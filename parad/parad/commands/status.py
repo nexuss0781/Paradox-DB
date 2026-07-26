@@ -3,7 +3,7 @@
 import hashlib
 import click
 from pathlib import Path
-from parad.config import load_config
+from parad.config import load_config, gateway_db_name
 from parad.crypto import encrypt_file
 from parad.gateway import GatewayClient, GatewayError
 from parad.state import load_state
@@ -14,7 +14,7 @@ def status():
     """Show local vs remote sync status."""
     config = load_config()
     db_path = Path(config.database_path).expanduser()
-    db_name = db_path.name
+    db_name = gateway_db_name(db_path)
     gw = GatewayClient(config.sync.gateway_url, config.sync.api_key)
 
     try:
@@ -69,7 +69,7 @@ def versions(name: str | None):
     """List all remote versions."""
     config = load_config()
     if not name:
-        name = Path(config.database_path).name
+        name = gateway_db_name(config.database_path)
 
     gw = GatewayClient(config.sync.gateway_url, config.sync.api_key)
 
@@ -97,7 +97,7 @@ def versions(name: str | None):
 def rollback(version: int, passphrase: str):
     """Rollback to a previous version."""
     config = load_config()
-    db_name = Path(config.database_path).name
+    db_name = gateway_db_name(config.database_path)
     db_path = Path(config.database_path).expanduser()
 
     gw = GatewayClient(config.sync.gateway_url, config.sync.api_key)

@@ -3,7 +3,7 @@
 import hashlib
 import click
 from pathlib import Path
-from parad.config import load_config
+from parad.config import load_config, gateway_db_name
 from parad.crypto import encrypt_file
 from parad.engine import Engine
 from parad.gateway import GatewayClient, GatewayError
@@ -11,7 +11,7 @@ from parad.state import get_remote_version, set_remote_version, set_last_local_h
 
 
 def _get_db_name(config) -> str:
-    return Path(config.database_path).name
+    return gateway_db_name(config.database_path)
 
 
 def _local_hash(db_path: Path) -> str:
