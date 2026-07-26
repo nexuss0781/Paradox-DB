@@ -1,88 +1,276 @@
 <p align="center">
-  <br>
-  <img src="https://img.shields.io/badge/Paradox--DB-Local--First%20Cloud%20Sync-blue?style=for-the-badge&logo=sqlite&logoColor=white" alt="Paradox-DB">
-  <br><br>
+  <img src="https://img.shields.io/badge/Paradox--DB-0.4.0-blue?style=for-the-badge&logo=sqlite&logoColor=white" alt="Paradox-DB">
 </p>
 
 <h1 align="center">Paradox-DB</h1>
 
 <p align="center">
-  <strong>Local-first SQLite database with Telegram-backed async cloud sync</strong>
+  <strong>Drop-in encrypted database with cloud sync.<br>One line of code. Your data, everywhere.</strong>
 </p>
 
 <p align="center">
-  <a href="#-quick-start">Quick Start</a> •
+  <a href="#-quickstart">Quickstart</a> •
+  <a href="#-sdk">SDK</a> •
+  <a href="#-cli">CLI</a> •
   <a href="#-architecture">Architecture</a> •
-  <a href="#-features">Features</a> •
-  <a href="#-deployment">Deployment</a> •
-  <a href="#-api-reference">API</a> •
-  <a href="#-contributing">Contributing</a>
+  <a href="#-deployment">Deploy</a>
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/TypeScript-5.5-blue?style=flat-square&logo=typescript" alt="TypeScript">
-  <img src="https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python" alt="Python">
-  <img src="https://img.shields.io/badge/FastAPI-0.115-009688?style=flat-square&logo=fastapi" alt="FastAPI">
+  <img src="https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square&logo=python" alt="Python">
   <img src="https://img.shields.io/badge/SQLite-WAL-green?style=flat-square&logo=sqlite" alt="SQLite">
+  <img src="https://img.shields.io/badge/FastAPI-0.115-009688?style=flat-square&logo=fastapi" alt="FastAPI">
   <img src="https://img.shields.io/badge/Telegram-Bot%20API-26A5E4?style=flat-square&logo=telegram" alt="Telegram">
-  <img src="https://img.shields.io/badge/License-MIT-yellow?style=flat-square" alt="MIT License">
+  <img src="https://img.shields.io/pypi/v/parad-blue?style=flat-square" alt="PyPI">
+  <img src="https://img.shields.io/badge/License-MIT-yellow?style=flat-square" alt="MIT">
 </p>
 
 ---
 
 ## What is Paradox-DB?
 
-Paradox-DB solves a fundamental problem: **you shouldn't need the internet to use your database, but you should always have a backup.**
+A local-first encrypted SQLite database that syncs to the cloud automatically. Install it, connect, and forget about infrastructure.
 
-It's a local-first database engine that gives you **sub-millisecond reads and writes** on your machine, while asynchronously syncing to the cloud through Telegram's infrastructure — one of the most reliable, censorship-resistant messaging platforms on Earth.
+```python
+from parad import connect
 
-No AWS bills. No complex distributed systems. Just your data, fast on your device, safe in the cloud.
+db = connect("users", passphrase="secret")
+db.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)")
+db.execute("INSERT INTO users VALUES (1, 'Alice')")
+db.commit()  # auto-syncs to cloud
+```
 
----
-
-## Why Telegram?
-
-| Traditional Cloud DB | Paradox-DB |
-|---------------------|------------|
-| Monthly costs that scale with storage | **Free** — Telegram bots get unlimited storage |
-| Vendor lock-in (AWS, GCP, Azure) | **No lock-in** — Telegram is a protocol, not a platform |
-| Complex auth and IAM setup | **Simple** — bot token + channel = done |
-| Single point of failure | **Censorship-resistant** — Telegram operates across jurisdictions |
-| Requires always-on connection | **Async** — sync when you want, work offline always |
+**No AWS. No Docker. No config files.** Just `pip install parad` and your data syncs through Telegram's infrastructure — free, encrypted, censorship-resistant.
 
 ---
 
-## Features
+## Quickstart
 
-### Local Engine
-- **SQLCipher encryption** — AES-256-CBC with 256k PBKDF2 iterations
-- **WAL mode** — concurrent reads during writes, zero-lock reads
-- **Sub-millisecond latency** — all queries hit local disk
-- **Full CRUD** — INSERT, SELECT, UPDATE, DELETE with parameterized queries
+### Install
 
-### Cloud Sync
-- **Async push/pull** — sync on timer, on operation count, or manually
-- **Version tracking** — every sync creates a versioned snapshot
-- **Conflict detection** — last-write-wins with full conflict logging
-- **Rate limiting** — respects Telegram's 20 files/min/channel limit
-- **Automatic retry** — 6-level exponential backoff on transient failures
-
-### Gateway API
-- **FastAPI + PostgreSQL** — async, typed, auto-documented
-- **JWT + API key auth** — dual authentication strategies
-- **Redis distributed locks** — prevents concurrent upload corruption
-- **Prometheus metrics** — request counts, latency histograms, error rates
-- **Docker Compose** — one command to production
-
-### CLI
 ```bash
-tgdb init mydb                    # Create encrypted database
-tgdb insert notes '{"title":"Hi"}' # Insert data
-tgdb select notes                  # Query data
-tgdb sync                          # Push to cloud
-tgdb pull                          # Pull from cloud
-tgdb status                        # Check sync state
-tgdb shell                         # Interactive SQL REPL
+pip install parad
+```
+
+### Setup (one time)
+
+```bash
+parad auth register          # create account (prompts for email/password)
+parad init users --project myapp  # creates everything: project, DB, local file, cloud backup
+```
+
+### Use
+
+```bash
+parad connect users          # connect + auto-sync daemon
+parad insert users '{"name": "Alice", "email": "alice@test.com"}'
+parad select users           # query data
+parad status                 # check sync state
+```
+
+### In Python
+
+```python
+from parad import connect
+
+# Connect to your database
+db = connect("users", passphrase="secret")
+
+# Full SQL support
+db.execute("CREATE TABLE tasks (id INTEGER PRIMARY KEY, title TEXT, done INTEGER)")
+db.execute("INSERT INTO tasks VALUES (1, 'Ship it', 0)")
+db.commit()  # auto-syncs to cloud in background
+
+# Query
+rows = db.execute("SELECT * FROM tasks")
+for row in rows:
+    print(row["title"])
+
+db.close()
+```
+
+### Connection String
+
+```python
+# Standard connection URL (like PostgreSQL)
+db = connect(url="parad://local/users?passphrase=secret")
+
+# From environment variable
+import os
+db = connect(url=os.environ["DATABASE_URL"])
+```
+
+```bash
+# Generate connection URL
+parad url
+# → parad://local/users?passphrase=secret
+```
+
+```bash
+# Environment variable support
+export DATABASE_URL="parad://local/users?passphrase=secret"
+export PARADOX_PASSPHRASE="secret"
+```
+
+---
+
+## SDK
+
+### `connect()` — The Core
+
+```python
+from parad import connect
+
+# Basic
+db = connect("mydb", passphrase="secret")
+
+# With connection string
+db = connect(url="parad://local/mydb?passphrase=secret")
+
+# Auto-sync disabled
+db = connect("mydb", passphrase="secret", auto_sync=False)
+```
+
+### Context Manager
+
+```python
+with connect("mydb", passphrase="secret") as db:
+    db.execute("INSERT INTO logs VALUES (1, 'started')")
+    db.commit()
+# Automatically closes and syncs
+```
+
+### DB-API 2.0 Compatible
+
+```python
+db = connect("mydb", passphrase="secret")
+
+# Execute SQL
+db.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)")
+db.execute("INSERT INTO users VALUES (?, ?)", ("Alice",))
+db.commit()
+
+# Query
+rows = db.execute("SELECT * FROM users")
+print(rows)  # [{"id": 1, "name": "Alice"}]
+
+# Table inspection
+db.tables()       # ["users"]
+db.table_info("users")  # column info
+
+# Cursor interface
+cursor = db.cursor()
+cursor.execute("SELECT * FROM users")
+cursor.fetchall()  # [{"id": 1, "name": "Alice"}]
+```
+
+### Auto-Sync
+
+When connected with `auto_sync=True` (default), a background daemon:
+
+- **Pushes** local changes every 2 seconds (on file change)
+- **Pulls** remote changes every 30 seconds
+- **Handles conflicts** — pulls first on 409, then retries push
+- **Never crashes** — all exceptions caught, keeps running
+
+```python
+db = connect("users", passphrase="secret", auto_sync=True)
+db.execute("INSERT INTO data VALUES (1, 'auto-synced')")
+db.commit()
+# → Background thread pushes to cloud within seconds
+```
+
+### URL Helpers
+
+```python
+from parad import parse_url, generate_url
+
+# Generate
+url = generate_url("mydb", "secret123")
+# → "parad://local/mydb?passphrase=secret123"
+
+# Parse
+parts = parse_url(url)
+# → {"name": "mydb", "passphrase": "secret123", "gateway_url": ""}
+```
+
+---
+
+## CLI
+
+### Authentication
+
+```bash
+parad auth register          # register (prompts for email, username, password)
+parad auth login             # login (prompts for email, password)
+parad auth status            # show current user
+```
+
+Auto-auth: commands prompt for login if not authenticated.
+
+### Database Setup
+
+```bash
+parad init <name>                    # one-step: auth + project + DB + local + push
+parad init <name> --project <proj>   # specify project name
+parad init <name> --watch            # start auto-sync daemon after init
+parad connect <name>                 # connect to existing DB + start daemon
+parad connect <name> --no-watch      # connect without daemon
+parad url                            # show connection URL
+```
+
+### Data Operations
+
+```bash
+parad exec "CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)"
+parad insert t '{"name": "Alice"}'
+parad select t
+parad select t '{"name": "Alice"}'   # with WHERE clause
+parad update t '{"name": "Bob"}' '{"id": 1}'
+parad delete t '{"id": 1}'
+```
+
+### Sync & Versions
+
+```bash
+parad push              # push local to cloud
+parad pull              # pull latest from cloud
+parad sync              # push + pull
+parad status            # show sync state
+parad versions          # list all versions
+parad rollback          # rollback to previous version
+```
+
+### Project & Database Management
+
+```bash
+parad project create <name>
+parad project list
+parad project get <id>
+parad project delete <id>
+
+parad db create <project> <name>
+parad db list <project>
+parad db get <id>
+parad db delete <id>
+```
+
+### Backups
+
+```bash
+parad backup create <db_id> <name> -n "before migration"
+parad backup list <db_id>
+parad backup restore <db_id> <backup_id>
+```
+
+### Advanced
+
+```bash
+parad shell              # interactive SQL REPL
+parad config show        # show all config
+parad config set key val # set config value
+parad watch              # start sync daemon (foreground)
+parad watch stop         # stop daemon
 ```
 
 ---
@@ -90,93 +278,50 @@ tgdb shell                         # Interactive SQL REPL
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────┐
-│              Telegram Channel                     │
-│     (versioned snapshots, encrypted files)        │
-└──────────────────────┬──────────────────────────┘
-                       │ async upload/download
-┌──────────────────────▼──────────────────────────┐
-│              Web Gateway (FastAPI)                │
-│  ┌─────────────┐  ┌──────────┐  ┌────────────┐  │
-│  │ PostgreSQL   │  │  Redis   │  │  Nginx     │  │
-│  │ (registry)   │  │ (locks)  │  │  (TLS)     │  │
-│  └─────────────┘  └──────────┘  └────────────┘  │
-└──────────────────────▲──────────────────────────┘
-                       │ HTTP REST (auth + rate-limit)
-┌──────────────────────┴──────────────────────────┐
-│              Client Engine (Bun/Node.js)          │
-│  ┌─────────────────────────────────────────────┐ │
-│  │  local.sqlcipher (SQLCipher, WAL mode)      │ │
-│  │  ChangeTracker → SyncManager → Gateway      │ │
-│  └─────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────┐
+│                    Your App                       │
+│                                                   │
+│   from parad import connect                       │
+│   db = connect("users", passphrase="secret")      │
+│                                                   │
+│   ┌────────────────────────────────────────────┐  │
+│   │         ParadConnection (SDK)              │  │
+│   │  ┌──────────────┐  ┌──────────────────┐   │  │
+│   │  │ Engine        │  │ SyncDaemon       │   │  │
+│   │  │ (encrypted    │  │ (background      │   │  │
+│   │  │  SQLite)      │  │  push/pull)      │   │  │
+│   │  └──────────────┘  └────────┬─────────┘   │  │
+│   └─────────────────────────────┼──────────────┘  │
+│                                 │                  │
+└─────────────────────────────────┼──────────────────┘
+                                  │ HTTPS
+                   ┌──────────────▼──────────────┐
+                   │       Gateway (FastAPI)      │
+                   │  ┌──────────┐ ┌──────────┐  │
+                   │  │PostgreSQL│ │  Redis   │  │
+                   │  │ (users,  │ │ (locks)  │  │
+                   │  │  projects│ │          │  │
+                   │  │  dbs)    │ │          │  │
+                   │  └──────────┘ └──────────┘  │
+                   └──────────────┬──────────────┘
+                                  │ Telegram Bot API
+                   ┌──────────────▼──────────────┐
+                   │     Telegram Channels        │
+                   │  (encrypted file snapshots)  │
+                   └─────────────────────────────┘
 ```
 
----
+### How Sync Works
 
-## Quick Start
-
-### Prerequisites
-
-- [Bun](https://bun.sh) >= 1.0 (or Node.js >= 20)
-- [Docker](https://docker.com) + Docker Compose
-- A [Telegram Bot Token](https://t.me/BotFather)
-
-### 1. Clone & Install
-
-```bash
-git clone https://github.com/nexuss0781/Paradox-DB.git
-cd Paradox-DB
-make install
-```
-
-### 2. Start the Gateway
-
-```bash
-cp .env.example .env
-# Edit .env with your Telegram credentials
-
-docker compose up --build -d
-curl http://localhost:8000/health
-# → {"status": "healthy"}
-```
-
-### 3. Use the Client
-
-```bash
-cd client
-
-# Create a database
-bun run src/cli.ts init myapp
-
-# Insert some data
-bun run src/cli.ts exec "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)"
-bun run src/cli.ts insert users '{"name":"Alice","email":"alice@example.com"}'
-
-# Query it
-bun run src/cli.ts select users
-
-# Sync to the cloud
-bun run src/cli.ts config set sync.api_key YOUR_API_KEY
-bun run src/cli.ts sync
-```
-
-### 4. Deploy to Render (Production)
-
-See [docs/setup.md](docs/setup.md) for full deployment guide.
-
-```bash
-# One-click deploy button (coming soon)
-# Or follow the manual steps in docs/setup.md
-```
-
----
-
-## Features Deep Dive
+1. **Engine** decrypts the local `.db` file to a temp SQLite database
+2. All queries run on the decrypted temp file (fast, familiar SQLite)
+3. On `close()` or `commit()`, the temp file is re-encrypted and written back
+4. **SyncDaemon** detects file changes via hash comparison
+5. Changed file is uploaded to Telegram as a versioned snapshot
+6. Remote changes are pulled periodically and written locally
+7. Conflicts (409) trigger a pull-then-retry-push strategy
 
 ### Encryption
-
-Every database file is encrypted with SQLCipher before it touches disk:
 
 | Setting | Value |
 |---------|-------|
@@ -185,43 +330,108 @@ Every database file is encrypted with SQLCipher before it touches disk:
 | Iterations | 256,000 |
 | Page Size | 4,096 bytes |
 
-The encryption key **never leaves your machine** and is **never transmitted** to the gateway.
+The encryption key **never leaves your machine**. The gateway stores raw SQLite data in Telegram channels — only you have the key.
 
-### Change Tracking
+---
 
-Every write operation is automatically tracked:
+## Gateway
 
-```typescript
-engine.insert('notes', { title: 'Hello' });
-// → Changeset buffer records: { type: 'insert', table: 'notes', data: {...} }
+### Deploy to Render
 
-engine.update('notes', { title: 'Updated' }, { id: 1 });
-// → Changeset buffer records: { type: 'update', table: 'notes', where: {id:1}, set: {title:'Updated'} }
+The gateway is live at **https://paradox-db.onrender.com**
+
+```bash
+# Local development
+cd gateway
+pip install -r requirements.txt
+uvicorn app.main:app --reload --port 8000
 ```
 
-Changesets are exported as JSON patches, uploaded to Telegram, and can be imported on other devices.
+### Environment Variables
 
-### Conflict Resolution
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `DATABASE_URL` | Yes | PostgreSQL connection string |
+| `REDIS_URL` | Yes | Redis connection string |
+| `TELEGRAM_BOT_TOKEN` | Yes | Bot token from @BotFather |
+| `TELEGRAM_STORAGE_CHAT_ID` | Yes | Channel for file storage |
+| `TELEGRAM_LOG_CHAT_ID` | No | Channel for log messages |
+| `JWT_SECRET` | Yes | Random string for JWT signing |
 
-When two devices modify the same data:
+### API Endpoints
 
-1. **Detection** — gateway compares client version vs. remote version
-2. **Response** — returns 409 with remote version info
-3. **Resolution** — client pulls remote, merges locally (LWW in v1)
-4. **Logging** — conflict details stored in `conflict_log` table
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/v1/auth/register` | Register user |
+| `POST` | `/v1/auth/login` | Login |
+| `GET` | `/v1/auth/me` | Current user |
+| `GET/POST` | `/v1/projects` | List/create projects |
+| `GET/POST` | `/v1/projects/{id}/databases` | List/create databases |
+| `GET/PUT/DELETE` | `/v1/databases/{id}` | Database CRUD |
+| `POST` | `/v1/upload` | Upload database |
+| `GET` | `/v1/download` | Download database |
+| `GET` | `/v1/status` | Sync status |
+| `GET` | `/v1/versions` | Version history |
+| `POST` | `/v1/rollback` | Rollback to version |
+| `GET` | `/test` | Run E2E test suite |
 
-### Retry with Exponential Backoff
+---
 
-Network failures trigger automatic retry with 6 escalating levels:
+## Configuration
 
+### Environment Variables
+
+```bash
+PARADOX_PASSPHRASE="secret"     # default encryption passphrase
+PARADOX_GATEWAY="https://paradox-db.onrender.com/v1"  # gateway URL
+PARADOX_DATABASE="~/.paradox/mydb.db"  # override DB path
+DATABASE_URL="parad://local/mydb?passphrase=secret"  # connection string
 ```
-Level 1: 1s delay    (immediate retry)
-Level 2: 2s delay    (brief wait)
-Level 3: 5s delay    (moderate wait)
-Level 4: 15s delay   (extended wait)
-Level 5: 60s delay   (patience)
-Level 6: 300s delay  (last resort)
+
+### Config File
+
+Located at `~/.paradox/config.json`:
+
+```json
+{
+  "database_path": "~/.paradox/users.db",
+  "project_id": "...",
+  "database_id": "...",
+  "encryption": {
+    "passphrase": "secret"
+  },
+  "sync": {
+    "gateway_url": "https://paradox-db.onrender.com/v1",
+    "api_key": "eyJ..."
+  }
+}
 ```
+
+---
+
+## Testing
+
+```bash
+# Gateway E2E test (live)
+curl https://paradox-db.onrender.com/test
+
+# Gateway unit tests
+cd gateway && python -m pytest tests/ -v
+
+# Client tests
+python -c "from parad import connect; db = connect('test', passphrase='x'); db.execute('SELECT 1'); db.close()"
+```
+
+---
+
+## Security
+
+- **AES-256-CBC encryption** at rest with 256k PBKDF2 iterations
+- **Encryption key never transmitted** — stays on your machine
+- **JWT + API key auth** for gateway access
+- **Redis distributed locks** prevent concurrent upload corruption
+- **Parameterized queries** — SQL injection impossible
+- **TLS 1.2+** for all transit
 
 ---
 
@@ -229,202 +439,52 @@ Level 6: 300s delay  (last resort)
 
 ```
 Paradox-DB/
-├── client/                    # TypeScript client engine
-│   ├── src/
-│   │   ├── engine.ts          # Core SQLite CRUD operations
-│   │   ├── change-tracker.ts  # Changeset recording & export
-│   │   ├── sync-manager.ts    # Push/pull orchestration
-│   │   ├── conflict-handler.ts # LWW conflict resolution
-│   │   ├── retry.ts           # Exponential backoff retry
-│   │   ├── config.ts          # Configuration management
-│   │   ├── cli.ts             # Full CLI interface
-│   │   ├── types.ts           # TypeScript type definitions
-│   │   ├── errors.ts          # Custom error classes
-│   │   └── index.ts           # Public API exports
-│   └── tests/                 # 8 test suites, 90+ tests
-├── gateway/                   # Python FastAPI gateway
+├── parad/                      # Python SDK + CLI (PyPI: parad)
+│   └── parad/
+│       ├── __init__.py         # exports connect(), ParadConnection
+│       ├── cli.py              # 20+ CLI commands
+│       ├── connection.py       # SDK: connect(), ParadConnection, SyncDaemon
+│       ├── engine.py           # encrypted SQLite engine
+│       ├── crypto.py           # AES-256-CBC encryption
+│       ├── gateway.py          # HTTP client for gateway API
+│       ├── watcher.py          # background sync daemon
+│       ├── state.py            # sync state tracker
+│       ├── config.py           # configuration management
+│       ├── types.py            # Pydantic models
+│       └── commands/           # CLI command implementations
+│           ├── auth.py         # register, login, status
+│           ├── init.py         # smart init (auto project+DB)
+│           ├── connect.py      # connect + daemon
+│           ├── sync.py         # push, pull, sync
+│           ├── query.py        # exec, insert, select, update, delete
+│           └── ...
+├── gateway/                    # FastAPI gateway (Render-deployed)
 │   ├── app/
-│   │   ├── main.py            # FastAPI application
-│   │   ├── auth.py            # JWT + API key authentication
-│   │   ├── database.py        # SQLAlchemy async engine
-│   │   ├── models.py          # Database models (User, Version, Conflict)
-│   │   ├── metrics.py         # Prometheus metrics
-│   │   ├── retry.py           # Telegram retry logic
-│   │   ├── config.py          # Pydantic settings
-│   │   ├── routers/           # API endpoints
-│   │   │   ├── upload.py      # Push sync endpoint
-│   │   │   ├── download.py    # Pull sync endpoint
-│   │   │   ├── versions.py    # Version listing
-│   │   │   ├── rollback.py    # Version rollback
-│   │   │   ├── status.py      # Sync status
-│   │   │   ├── health.py      # Health checks
-│   │   │   └── auth.py        # User registration
-│   │   └── services/
-│   │       └── telegram.py    # Telegram Bot API client
-│   └── tests/                 # 10 test suites, 100+ tests
-├── nginx/nginx.conf           # TLS termination + rate limiting
-├── docs/                      # Documentation
-│   ├── setup.md               # Installation guide
-│   ├── configuration.md       # All config options
-│   ├── api.md                 # Gateway API reference
-│   ├── cli.md                 # CLI command reference
-│   └── troubleshooting.md     # Common errors and fixes
-├── tests/                     # Load test + security audit
-│   ├── load_test.py           # 100-user concurrent load test
-│   └── security_audit.py      # Security checklist validator
-├── docker-compose.yml         # Production stack (5 services)
-├── install.sh                 # One-line installer
-├── Makefile                   # Dev commands
-└── SPEC/                      # Engineering specifications
+│   │   ├── main.py             # FastAPI app, v2.0.0
+│   │   ├── auth.py             # JWT + bcrypt
+│   │   ├── models.py           # SQLAlchemy models
+│   │   ├── config.py           # Pydantic settings
+│   │   └── routers/
+│   │       ├── auth.py         # register, login, me
+│   │       ├── projects.py     # project CRUD
+│   │       ├── databases.py    # DB CRUD + versions + sync + rollback
+│   │       ├── notifications.py # SSE real-time
+│   │       └── test.py         # live E2E test suite
+│   └── tests/
+│       └── test_e2e.py         # unit tests (7/7)
+└── README.md
 ```
-
----
-
-## API Reference
-
-### Authentication
-
-```bash
-# Register a new user
-curl -X POST http://localhost:8000/v1/auth/register
-# → { "user_id": "...", "api_key": "pk_...", "channel_id": "" }
-```
-
-### Sync Push
-
-```bash
-# Upload database to Telegram
-curl -X POST http://localhost:8000/v1/upload \
-  -H "X-API-Key: pk_..." \
-  -H "Content-Type: application/json" \
-  -d '{"database_name": "mydb", "file_data": "<base64>"}'
-# → { "version": 2, "message_id": "123" }
-```
-
-### Sync Pull
-
-```bash
-# Download latest version
-curl -X GET "http://localhost:8000/v1/download?database_name=mydb" \
-  -H "X-API-Key: pk_..."
-# → Binary SQLite file
-```
-
-### Version History
-
-```bash
-# List all versions
-curl -X GET "http://localhost:8000/v1/versions?database_name=mydb" \
-  -H "X-API-Key: pk_..."
-# → { "versions": [{ "version": 1, "uploaded_at": "..." }] }
-```
-
-Full API docs: [docs/api.md](docs/api.md)
-
----
-
-## Deployment
-
-### Render (Recommended)
-
-1. Fork this repo
-2. Create a **PostgreSQL** instance on Render
-3. Create a **Redis** instance on Render
-4. Create a **Web Service** from this repo
-5. Set environment variables (see [docs/configuration.md](docs/configuration.md))
-6. Deploy
-
-### Docker Compose (Self-Hosted)
-
-```bash
-cp .env.production .env
-# Fill in all secrets
-
-docker compose up --build -d
-```
-
-This starts 5 services: Gateway, PostgreSQL, Redis, Nginx (TLS), Certbot (auto-renew).
-
-### Manual
-
-```bash
-# Gateway
-cd gateway
-pip install -r requirements.txt
-uvicorn app.main:app --host 0.0.0.0 --port 8000
-
-# Client
-cd client
-bun install && bun run build
-```
-
----
-
-## Configuration
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `TELEGRAM_BOT_TOKEN` | Yes | Bot token from @BotFather |
-| `TELEGRAM_API_ID` | Yes | API credentials from my.telegram.org |
-| `TELEGRAM_API_HASH` | Yes | API credentials from my.telegram.org |
-| `POSTGRES_PASSWORD` | Yes | Strong database password |
-| `JWT_SECRET` | Yes | Random string for JWT signing |
-| `API_KEY_SALT` | Yes | Random string for API key hashing |
-
-Full config reference: [docs/configuration.md](docs/configuration.md)
-
----
-
-## Testing
-
-```bash
-# Client tests (90+ tests)
-cd client && bun test
-
-# Gateway tests (100+ tests, requires Docker)
-cd gateway && docker compose up -d postgres redis
-PYTHONPATH=. pytest tests/ -v
-
-# Load test (100 concurrent users)
-python3 tests/load_test.py --url http://localhost:8000
-
-# Security audit
-python3 tests/security_audit.py --url http://localhost:8000
-```
-
----
-
-## Security
-
-- **SQLCipher encryption** — database encrypted at rest with AES-256
-- **Key never transmitted** — encryption key stays on your machine
-- **TLS 1.2+** — all transit encrypted via Nginx
-- **Rate limiting** — per-user and per-channel limits prevent abuse
-- **Parameterized queries** — SQL injection impossible
-- **No secrets in logs** — API keys and tokens are hashed/masked
-
-Security audit script: `python3 tests/security_audit.py`
 
 ---
 
 ## Roadmap
 
-- [ ] Web UI dashboard for sync monitoring
-- [ ] Multi-device merge (beyond LWW)
-- [ ] End-to-end encryption for gateway transit
-- [ ] Webhook notifications on sync events
-- [ ] Mobile client (React Native)
-- [ ] Desktop app (Electron/Tauri)
-
----
-
-## Contributing
-
-1. Fork the repo
-2. Create a feature branch (`git checkout -b feature/amazing`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing`)
-5. Open a Pull Request
+- [ ] Inotify-based file watching (replace polling)
+- [ ] Multi-device merge (beyond last-write-wins)
+- [ ] Node.js SDK (`npm install parad`)
+- [ ] `parad://` OS protocol handler
+- [ ] Web dashboard for sync monitoring
+- [ ] WebSocket real-time sync notifications
 
 ---
 
