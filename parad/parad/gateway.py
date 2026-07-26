@@ -226,7 +226,7 @@ class GatewayClient:
     def diff_versions(self, database_id: str, version_a: int, version_b: int) -> dict:
         """Compare two versions of a database."""
         resp = httpx.get(
-            f"{self.gateway_url}/databases/{database_id}/versions/diff",
+            f"{self.gateway_url}/databases/{database_id}/diff",
             params={"version_a": version_a, "version_b": version_b},
             headers=self._headers(),
             timeout=SHORT_TIMEOUT,
@@ -296,7 +296,7 @@ class GatewayClient:
         if encryption_key:
             payload["encryption_key"] = encryption_key
         resp = httpx.post(
-            f"{self.gateway_url}/v1/upload",
+            f"{self.gateway_url}/upload",
             json=payload,
             headers=self._headers(),
             timeout=COLD_START_TIMEOUT,
@@ -313,7 +313,7 @@ class GatewayClient:
         if encryption_key:
             params["encryption_key"] = encryption_key
         resp = httpx.get(
-            f"{self.gateway_url}/v1/download",
+            f"{self.gateway_url}/download",
             params=params,
             headers=self._headers(),
             timeout=COLD_START_TIMEOUT,
@@ -329,7 +329,7 @@ class GatewayClient:
     def status(self) -> StatusResponse:
         """Get sync status from the gateway."""
         resp = httpx.get(
-            f"{self.gateway_url}/v1/status",
+            f"{self.gateway_url}/status",
             headers=self._headers(),
             timeout=SHORT_TIMEOUT,
             follow_redirects=True,
@@ -340,7 +340,7 @@ class GatewayClient:
     def versions(self, database_name: str) -> VersionsResponse:
         """List all versions for a database (legacy by name)."""
         resp = httpx.get(
-            f"{self.gateway_url}/v1/versions",
+            f"{self.gateway_url}/versions",
             params={"database_name": database_name},
             headers=self._headers(),
             timeout=SHORT_TIMEOUT,
@@ -352,7 +352,7 @@ class GatewayClient:
     def rollback(self, database_name: str, target_version: int) -> RollbackResponse:
         """Rollback a database to a target version."""
         resp = httpx.post(
-            f"{self.gateway_url}/v1/rollback",
+            f"{self.gateway_url}/rollback",
             json={"database_name": database_name, "target_version": target_version},
             headers=self._headers(),
             timeout=COLD_START_TIMEOUT,

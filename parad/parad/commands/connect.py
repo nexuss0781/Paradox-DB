@@ -2,7 +2,7 @@
 
 import click
 from pathlib import Path
-from parad.config import load_config, save_config, CONFIG_DIR
+from parad.config import load_config, save_config, CONFIG_DIR, gateway_db_name
 from parad.engine import Engine
 from parad.gateway import GatewayClient, GatewayError
 from parad.state import get_remote_version, set_remote_version, set_last_local_hash
@@ -20,7 +20,7 @@ def connect(name: str, passphrase: str, no_watch: bool):
     """
     config = load_config()
     db_path = CONFIG_DIR / f"{name}.db"
-    db_name = f"{name}.db"
+    db_name = name  # gateway name without .db
 
     # Update config to point to this DB
     config.database_path = str(db_path)

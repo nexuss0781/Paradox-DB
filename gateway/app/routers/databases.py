@@ -9,7 +9,7 @@ from datetime import datetime
 import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
-from sqlalchemy import select, func
+from sqlalchemy import select, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import get_current_user, rate_limiter
@@ -163,8 +163,8 @@ async def delete_database(
         raise HTTPException(status_code=404, detail="Database not found")
 
     # Delete versions and backups
-    await db.execute(select(DatabaseVersion).where(DatabaseVersion.db_id == database_id))
-    await db.execute(select(DatabaseBackup).where(DatabaseBackup.db_id == database_id))
+    await db.execute(delete(DatabaseVersion).where(DatabaseVersion.db_id == database_id))
+    await db.execute(delete(DatabaseBackup).where(DatabaseBackup.db_id == database_id))
     await db.delete(paradox_db)
     return {"detail": "Database deleted"}
 
