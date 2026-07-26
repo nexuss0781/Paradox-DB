@@ -11,6 +11,7 @@ import hashlib
 import secrets
 import time
 import traceback
+import uuid
 from datetime import datetime
 
 import httpx
@@ -25,7 +26,7 @@ from app.telegram_logger import log_operation
 
 router = APIRouter()
 
-_TEST_USER_ID = f"u_e2e_{secrets.token_hex(8)}"
+_TEST_USER_ID = str(uuid.uuid4())
 _TEST_EMAIL = f"e2e_{secrets.token_hex(8)}@test.paradox"
 _TEST_USERNAME = f"e2e_{secrets.token_hex(6)}"
 _TEST_DB_NAME = f"e2e_test_{secrets.token_hex(4)}.db"
@@ -220,7 +221,7 @@ async def _run_test():
             await session.flush()
 
             # Create test project
-            project_id = f"proj_e2e_{secrets.token_hex(8)}"
+            project_id = str(uuid.uuid4())
             await session.execute(
                 text(
                     "INSERT INTO projects (id, user_id, name, description, created_at, updated_at) "
@@ -232,7 +233,7 @@ async def _run_test():
             await session.flush()
 
             # Create test database
-            db_id = f"db_e2e_{secrets.token_hex(8)}"
+            db_id = str(uuid.uuid4())
             file_hash = hashlib.sha256(_TEST_FILE_CONTENT).hexdigest()
             await session.execute(
                 text(
@@ -246,7 +247,7 @@ async def _run_test():
             await session.flush()
 
             # Create version record
-            ver_id = f"ver_e2e_{secrets.token_hex(8)}"
+            ver_id = str(uuid.uuid4())
             await session.execute(
                 text(
                     "INSERT INTO database_versions (id, db_id, version_number, file_hash, file_size, message_id, created_by, created_at) "
