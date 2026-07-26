@@ -1,40 +1,77 @@
+"""Auth endpoints — register, login, me."""
+
 import secrets
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..auth import generate_api_key, hash_api_key, create_jwt
-from ..config import settings
+from ..auth import create_jwt, get_current_user, hash_password, verify_password
 from ..database import get_db
-from ..models import UserChannel
-from ..telegram_logger import log_operation
+from ..models import User, RegisterRequest, LoginRequest, AuthResponse, UserResponse
 
 router = APIRouter(prefix="/v1/auth", tags=["auth"])
 
 
-@router.post("/register")
-async def register(db: AsyncSession = Depends(get_db)):
-    user_id = f"u_{secrets.token_urlsafe(16)}"
-    api_key = generate_api_key()
-    api_key_hash = hash_api_key(api_key)
+@router.post("/register", response_model=AuthResponse)
+async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
+    """Register a new user with email, username, and password."""
+    # Check email uniqueness
+    existing = await db.execute(select(User).where(User.email == body.email))
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail="Email already registered")
 
-    result = await db.execute(
-        select(UserChannel).where(UserChannel.user_id == user_id)
-    )
-    if result.scalar_one_or_none():
-        await log_operation("register", f"User already exists: {user_id}", "fail")
-        raise HTTPException(status_code=409, detail="User already exists")
+    # Check username uniqueness
+    existing = await db.execute(select(User).where(User.username == body.username))
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail="Username already taken")
 
-    user = UserChannel(
-        user_id=user_id,
-        channel_id=settings.telegram_storage_chat_id,
-        bot_token_id=settings.telegram_bot_token,
-        api_key_hash=api_key_hash,
+    user = User(
+        id=str(secrets.token_urlsafe(16)),
+        email=body.email,
+        username=body.username,
+        password_hash=hash_password(body.password),
     )
     db.add(user)
-    await db.commit()
+    await db.flush()
 
-    jwt_token = create_jwt(user_id)
-    await log_operation("register", f"New user: {user_id}", "success")
-    return {"user_id": user_id, "api_key": api_key, "jwt": jwt_token}
+    token = create_jwt(user.id)
+    return AuthResponse(
+        user_id=user.id,
+        email=user.email,
+        username=user.username,
+        access_token=token,
+    )
+
+
+@router.post("/login", response_model=AuthResponse)
+async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
+    """Login with email and password."""
+    result = await db.execute(select(User).where(User.email == body.email))
+    user = result.scalar_one_or_none()
+    if not user or not verify_password(body.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="Account disabled")
+
+    token = create_jwt(user.id)
+    return AuthResponse(
+        user_id=user.id,
+        email=user.email,
+        username=user.username,
+        access_token=token,
+    )
+
+
+@router.get("/me", response_model=UserResponse)
+async def me(
+    user: User = Depends(get_current_user),
+):
+    """Get current user info."""
+    return UserResponse(
+        id=user.id,
+        email=user.email,
+        username=user.username,
+        is_active=user.is_active,
+        created_at=user.created_at.isoformat() if user.created_at else "",
+    )

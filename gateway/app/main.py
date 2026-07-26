@@ -10,7 +10,7 @@ from prometheus_client import CONTENT_TYPE_LATEST
 from app.database import close_db, init_db
 from app.logging_config import setup_logging
 from app.metrics import MetricsMiddleware, get_metrics
-from app.routers import auth, health, upload, download, versions, rollback, status, test, notifications
+from app.routers import auth, health, test, notifications, projects, databases
 from app.telegram_logger import log_operation
 
 
@@ -24,7 +24,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Paradox-DB Gateway",
-    version="1.0.0",
+    version="2.0.0",
     description="Web Gateway for Telegram-synced SQLite database",
     lifespan=lifespan,
 )
@@ -73,16 +73,13 @@ async def metrics_endpoint():
 
 app.include_router(health.router, tags=["health"])
 app.include_router(auth.router, tags=["auth"])
-app.include_router(upload.router, prefix="/v1", tags=["upload"])
-app.include_router(download.router, prefix="/v1", tags=["download"])
-app.include_router(versions.router, prefix="/v1", tags=["versions"])
-app.include_router(rollback.router, prefix="/v1", tags=["rollback"])
-app.include_router(status.router, prefix="/v1", tags=["status"])
 app.include_router(test.router, tags=["test"])
 app.include_router(notifications.router, tags=["notifications"])
+app.include_router(projects.router, tags=["projects"])
+app.include_router(databases.router, tags=["databases"])
 
 
 @app.get("/")
 async def root():
     await log_operation("gateway", "Gateway info requested", "info")
-    return {"service": "paradox-db-gateway", "version": "1.0.0"}
+    return {"service": "paradox-db-gateway", "version": "2.0.0"}

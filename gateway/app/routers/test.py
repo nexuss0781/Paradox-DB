@@ -8,9 +8,10 @@ Each step is reported independently so partial failures are visible.
 
 import base64
 import hashlib
+import secrets
 import time
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime
 
 import httpx
 from fastapi import APIRouter, Depends
@@ -19,14 +20,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import async_session_factory, get_db
-from app.models import DatabaseVersion, UserChannel, VersionHistory
 from app.services.telegram import TelegramClient
 from app.telegram_logger import log_operation
 
 router = APIRouter()
 
-_TEST_USER_ID = "u_e2e_test"
-_TEST_DB_NAME = "e2e_test.db"
+_TEST_USER_ID = f"u_e2e_{secrets.token_hex(8)}"
+_TEST_EMAIL = f"e2e_{secrets.token_hex(8)}@test.paradox"
+_TEST_USERNAME = f"e2e_{secrets.token_hex(6)}"
+_TEST_DB_NAME = f"e2e_test_{secrets.token_hex(4)}.db"
 _TEST_FILE_CONTENT = b"paradox-e2e-test-payload-1234567890"
 _TEST_CHANNEL_ID = settings.telegram_storage_chat_id
 
@@ -120,7 +122,7 @@ async def _run_test():
                 )
             )
             tables = sorted([row[0] for row in res.fetchall()])
-            required = {"database_versions", "sync_log", "user_channels", "version_history"}
+            required = {"users", "projects", "paradox_dbs", "database_versions", "database_backups", "sync_log", "conflict_log"}
             missing = required - set(tables)
             if missing:
                 s["status"] = "fail"
@@ -153,7 +155,7 @@ async def _run_test():
                 "db_name": _TEST_DB_NAME,
                 "version": 1,
                 "type": "full",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.utcnow().isoformat(),
                 "hash": hashlib.sha256(_TEST_FILE_CONTENT).hexdigest(),
                 "user_id": _TEST_USER_ID,
             }
@@ -199,96 +201,70 @@ async def _run_test():
     s["duration_ms"] = round((time.time() - t0) * 1000, 1)
     results.append(s)
 
-    # ── 8. Registry: Write & Read ────────────────────────────────────
+    # ── 8. Registry: Write & Read (new schema) ──────────────────────
     s = _step("registry_write_read")
     t0 = time.time()
     try:
         async with async_session_factory() as session:
-            existing = await session.execute(
-                text(
-                    "SELECT user_id FROM user_channels WHERE user_id = :uid"
-                ),
-                {"uid": _TEST_USER_ID},
-            )
-            if existing.fetchone():
-                await session.execute(
-                    text("DELETE FROM version_history WHERE user_id = :uid"),
-                    {"uid": _TEST_USER_ID},
-                )
-                await session.execute(
-                    text("DELETE FROM database_versions WHERE user_id = :uid"),
-                    {"uid": _TEST_USER_ID},
-                )
-                await session.execute(
-                    text("DELETE FROM sync_log WHERE user_id = :uid"),
-                    {"uid": _TEST_USER_ID},
-                )
-                await session.execute(
-                    text("DELETE FROM user_channels WHERE user_id = :uid"),
-                    {"uid": _TEST_USER_ID},
-                )
-                await session.flush()
-
-            now = datetime.now(timezone.utc)
             now = datetime.utcnow()
+
+            # Create test user
             await session.execute(
                 text(
-                    "INSERT INTO user_channels (user_id, channel_id, bot_token_id, api_key_hash, created_at) "
-                    "VALUES (:uid, :cid, :bt, :akh, :ca)"
+                    "INSERT INTO users (id, email, username, password_hash, is_active, created_at, updated_at) "
+                    "VALUES (:id, :email, :username, :pw, true, :ca, :ua)"
                 ),
-                {
-                    "uid": _TEST_USER_ID,
-                    "cid": _TEST_CHANNEL_ID,
-                    "bt": settings.telegram_bot_token,
-                    "akh": "e2e_test_hash",
-                    "ca": now,
-                },
+                {"id": _TEST_USER_ID, "email": _TEST_EMAIL, "username": _TEST_USERNAME,
+                 "pw": "e2e_test_hash", "ca": now, "ua": now},
             )
             await session.flush()
 
-            if uploaded_message_id:
-                file_hash = hashlib.sha256(_TEST_FILE_CONTENT).hexdigest()
-                now = datetime.utcnow()
-                await session.execute(
-                    text(
-                        "INSERT INTO database_versions "
-                        "(user_id, database_name, latest_message_id, latest_version, file_hash, uploaded_at) "
-                        "VALUES (:uid, :dbn, :mid, :ver, :fh, :ua)"
-                    ),
-                    {
-                        "uid": _TEST_USER_ID,
-                        "dbn": _TEST_DB_NAME,
-                        "mid": uploaded_message_id,
-                        "ver": 1,
-                        "fh": file_hash,
-                        "ua": now,
-                    },
-                )
-                await session.execute(
-                    text(
-                        "INSERT INTO version_history "
-                        "(user_id, database_name, version, message_id, file_hash, file_size, version_type, uploaded_at) "
-                        "VALUES (:uid, :dbn, :ver, :mid, :fh, :fs, :vt, :ua)"
-                    ),
-                    {
-                        "uid": _TEST_USER_ID,
-                        "dbn": _TEST_DB_NAME,
-                        "ver": 1,
-                        "mid": uploaded_message_id,
-                        "fh": file_hash,
-                        "fs": len(_TEST_FILE_CONTENT),
-                        "vt": "full",
-                        "ua": now,
-                    },
-                )
-                await session.commit()
+            # Create test project
+            project_id = f"proj_e2e_{secrets.token_hex(8)}"
+            await session.execute(
+                text(
+                    "INSERT INTO projects (id, user_id, name, description, created_at, updated_at) "
+                    "VALUES (:id, :uid, :name, :desc, :ca, :ua)"
+                ),
+                {"id": project_id, "uid": _TEST_USER_ID, "name": "E2E Test Project",
+                 "desc": "Automated test", "ca": now, "ua": now},
+            )
+            await session.flush()
 
+            # Create test database
+            db_id = f"db_e2e_{secrets.token_hex(8)}"
+            file_hash = hashlib.sha256(_TEST_FILE_CONTENT).hexdigest()
+            await session.execute(
+                text(
+                    "INSERT INTO paradox_dbs (id, project_id, user_id, name, latest_version, latest_message_id, file_hash, created_at, updated_at) "
+                    "VALUES (:id, :pid, :uid, :name, :ver, :mid, :fh, :ca, :ua)"
+                ),
+                {"id": db_id, "pid": project_id, "uid": _TEST_USER_ID,
+                 "name": _TEST_DB_NAME, "ver": 1, "mid": uploaded_message_id,
+                 "fh": file_hash, "ca": now, "ua": now},
+            )
+            await session.flush()
+
+            # Create version record
+            ver_id = f"ver_e2e_{secrets.token_hex(8)}"
+            await session.execute(
+                text(
+                    "INSERT INTO database_versions (id, db_id, version_number, file_hash, file_size, message_id, created_by, created_at) "
+                    "VALUES (:id, :dbid, :ver, :fh, :fs, :mid, :cb, :ca)"
+                ),
+                {"id": ver_id, "dbid": db_id, "ver": 1, "fh": file_hash,
+                 "fs": len(_TEST_FILE_CONTENT), "mid": uploaded_message_id,
+                 "cb": _TEST_USER_ID, "ca": now},
+            )
+            await session.commit()
+
+            # Read back
             verify = await session.execute(
                 text(
-                    "SELECT latest_version, latest_message_id FROM database_versions "
-                    "WHERE user_id = :uid AND database_name = :dbn"
+                    "SELECT pv.latest_version, pv.latest_message_id FROM paradox_dbs pv "
+                    "WHERE pv.id = :dbid"
                 ),
-                {"uid": _TEST_USER_ID, "dbn": _TEST_DB_NAME},
+                {"dbid": db_id},
             )
             row = verify.fetchone()
             if row and row[0] == 1 and row[1] == uploaded_message_id:
@@ -310,15 +286,13 @@ async def _run_test():
     t0 = time.time()
     try:
         async with async_session_factory() as session:
-            for tbl in ["version_history", "database_versions", "sync_log"]:
-                await session.execute(
-                    text(f"DELETE FROM {tbl} WHERE user_id = :uid"),
-                    {"uid": _TEST_USER_ID},
-                )
-            await session.execute(
-                text("DELETE FROM user_channels WHERE user_id = :uid"),
-                {"uid": _TEST_USER_ID},
-            )
+            await session.execute(text("DELETE FROM database_versions WHERE created_by = :uid"), {"uid": _TEST_USER_ID})
+            await session.execute(text("DELETE FROM sync_log WHERE user_id = :uid"), {"uid": _TEST_USER_ID})
+            await session.execute(text("DELETE FROM conflict_log WHERE user_id = :uid"), {"uid": _TEST_USER_ID})
+            await session.execute(text("DELETE FROM database_backups WHERE user_id = :uid"), {"uid": _TEST_USER_ID})
+            await session.execute(text("DELETE FROM paradox_dbs WHERE user_id = :uid"), {"uid": _TEST_USER_ID})
+            await session.execute(text("DELETE FROM projects WHERE user_id = :uid"), {"uid": _TEST_USER_ID})
+            await session.execute(text("DELETE FROM users WHERE id = :uid"), {"uid": _TEST_USER_ID})
             await session.commit()
         s["status"] = "pass"
     except Exception as e:
