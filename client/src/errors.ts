@@ -14,10 +14,29 @@ export class SQLiteError extends Error {
   }
 }
 
+export class DecryptionError extends Error {
+  constructor(message = 'Invalid passphrase or corrupt database file') {
+    super(message);
+    this.name = 'DecryptionError';
+  }
+}
+
 export class EncryptionError extends Error {
   constructor(message = 'Wrong passphrase or corrupted database') {
     super(message);
     this.name = 'EncryptionError';
+  }
+}
+
+export class GatewayError extends Error {
+  statusCode: number;
+  detail?: unknown;
+
+  constructor(statusCode: number, message: string, detail?: unknown) {
+    super(message);
+    this.name = 'GatewayError';
+    this.statusCode = statusCode;
+    this.detail = detail;
   }
 }
 

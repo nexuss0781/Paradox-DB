@@ -1,326 +1,262 @@
 #!/usr/bin/env node
-import { ClientEngine } from './engine.js';
-import { ChangeTracker } from './change-tracker.js';
-import { SyncManager } from './sync-manager.js';
-import { ConflictHandler } from './conflict-handler.js';
-import { loadConfig, saveConfig } from './config.js';
-import * as fs from 'fs';
-import * as path from 'path';
-import * as os from 'os';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import * as path from 'node:path';
+import * as os from 'node:os';
+import * as readline from 'node:readline/promises';
+import { stdin, stdout } from 'node:process';
+import { connect } from './connection.js';
+import { GatewayClient } from './gateway.js';
+import { loadConfig, saveConfig, getDefaultConfigPath } from './config.js';
+import * as state from './state.js';
+import { encryptFile } from './crypto.js';
+import * as fs from 'node:fs';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const args = process.argv.slice(2);
 const command = args[0];
 
-function usage() {
+function usage(): void {
   console.log(`
-tgdb — Paradox-DB CLI
+parad — Paradox-DB CLI
 
-Usage: tgdb <command> [options]
+Usage: parad <command> [options]
 
 Commands:
   init <name>              Create new encrypted database
-  open <name>              Open existing database
+  connect <url>            Connect via postgres-like connection string
   exec <sql>               Execute raw SQL
   insert <table> <json>    Insert row
   select <table> [where]   Query rows
   update <table> <set> <where>  Update rows
   delete <table> <where>   Delete rows
-   sync                     Manual sync trigger
-   push                     Push local changes to gateway
-   pull [version]           Pull latest from Telegram
+  push                     Push local changes to gateway
+  pull [version]           Pull latest (or specific version)
+  sync                     Push then pull
   status                   Show sync status
-  logs                     Show sync history
   versions                 List remote versions
   rollback <version>       Rollback to version
-  config show              Show config
-  config set <key> <value> Update config
+  config show|set          Show / update config
   shell                    Interactive REPL
   --help, -h               Show this help
-  --json                   Machine-readable output
   --version, -v            Show version
 `);
 }
 
 function getVersion(): string {
   try {
-    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf-8'));
+    const pkg = JSON.parse(readFileSync(path.join(__dirname, '..', 'package.json'), 'utf-8'));
     return pkg.version || '0.1.0';
   } catch {
     return '0.1.0';
   }
 }
 
-function resolveDbPath(name?: string): string {
-  const config = loadConfig();
-  if (name) {
-    const base = config.database_path.replace(/^~/, os.homedir());
-    return path.join(path.dirname(base), `${name}.sqlcipher`);
-  }
-  return config.database_path.replace(/^~/, os.homedir());
-}
-
-function getEngine(name?: string): ClientEngine {
-  const config = loadConfig();
-  const dbPath = resolveDbPath(name);
-  config.database_path = dbPath;
-  return new ClientEngine(config);
-}
-
-function output(data: any, jsonMode: boolean) {
+function output(data: unknown, jsonMode: boolean): void {
   if (jsonMode) {
     console.log(JSON.stringify(data, null, 2));
-  } else {
-    if (Array.isArray(data)) {
-      if (data.length === 0) { console.log('(empty)'); return; }
-      console.table(data);
-    } else if (typeof data === 'object' && data !== null) {
-      Object.entries(data).forEach(([k, v]) => console.log(`${k}: ${v}`));
-    } else {
-      console.log(data);
+  } else if (Array.isArray(data)) {
+    if (data.length === 0) {
+      console.log('(empty)');
+      return;
     }
+    console.table(data);
+  } else if (typeof data === 'object' && data !== null) {
+    Object.entries(data).forEach(([k, v]) => console.log(`${k}: ${v}`));
+  } else {
+    console.log(data);
   }
 }
 
 const jsonMode = args.includes('--json');
-const cleanArgs = args.filter(a => a !== '--json');
+const cleanArgs = args.filter((a) => a !== '--json');
 
-async function main() {
-  const passphrase = process.env.PARADOX_PASSPHRASE || 'default';
-
+async function main(): Promise<void> {
   switch (command) {
     case 'init': {
       const name = cleanArgs[1];
-      if (!name) { console.error('Usage: tgdb init <name>'); process.exit(1); }
-      const config = loadConfig();
-      if (!config.sync.api_key) {
-        console.log('No API key found. Registering with gateway...');
-        const syncManager = new SyncManager(config);
-        const baseUrl = config.sync.gateway_url.replace(/\/+$/, '');
-        try {
-          const result = await syncManager.httpPostJSON(`${baseUrl}/v1/auth/register`, {}, '');
-          if (result.status === 200 && result.data?.api_key) {
-            config.sync.api_key = result.data.api_key;
-            saveConfig(config);
-            console.log(`Registered. User ID: ${result.data.user_id}`);
-            console.log(`API key saved to config.`);
-          } else {
-            console.error('Registration failed. You can set api_key manually in config.');
-          }
-        } catch (err: any) {
-          console.error(`Registration failed: ${err.message}. Set api_key manually.`);
-        }
+      if (!name) {
+        console.error('Usage: parad init <name>');
+        process.exit(1);
       }
-      const dbPath = resolveDbPath(name);
-      if (fs.existsSync(dbPath)) { console.error(`Database '${name}' already exists`); process.exit(1); }
-      const engine = getEngine(name);
-      engine.open(passphrase, dbPath);
-      engine.execute('CREATE TABLE IF NOT EXISTS _meta (key TEXT PRIMARY KEY, value TEXT)');
-      engine.close();
-      output({ status: 'created', name, path: dbPath }, jsonMode);
+      const conn = await connect({ name, autoSync: false });
+      conn.execute('CREATE TABLE IF NOT EXISTS _meta (key TEXT PRIMARY KEY, value TEXT)');
+      conn.close();
+      output({ status: 'created', name, path: conn.engine.dbPath }, jsonMode);
       break;
     }
-    case 'open': {
-      const name = cleanArgs[1];
-      if (!name) { console.error('Usage: tgdb open <name>'); process.exit(1); }
-      const engine = getEngine(name);
-      engine.open(passphrase);
-      output({ status: 'opened', name, isOpen: engine.isOpen }, jsonMode);
-      engine.close();
+    case 'connect': {
+      const url = cleanArgs[1];
+      if (!url) {
+        console.error('Usage: parad connect <url>');
+        process.exit(1);
+      }
+      const conn = await connect({ url, autoSync: false });
+      output({ status: 'connected', name: conn.dbKey, path: conn.engine.dbPath }, jsonMode);
+      conn.close();
       break;
     }
     case 'exec': {
       const sql = cleanArgs.slice(1).join(' ');
-      if (!sql) { console.error('Usage: tgdb exec <sql>'); process.exit(1); }
-      const engine = getEngine();
-      engine.open(passphrase);
-      const result = engine.execute(sql);
+      if (!sql) {
+        console.error('Usage: parad exec <sql>');
+        process.exit(1);
+      }
+      const conn = await connect({});
+      const result = conn.execute(sql);
       if (result.rows.length > 0) output(result.rows, jsonMode);
       else output({ changes: result.changes, lastInsertRowid: result.lastInsertRowid }, jsonMode);
-      engine.close();
+      conn.close();
       break;
     }
     case 'insert': {
       const table = cleanArgs[1];
       const jsonData = cleanArgs.slice(2).join(' ');
-      if (!table || !jsonData) { console.error('Usage: tgdb insert <table> <json>'); process.exit(1); }
+      if (!table || !jsonData) {
+        console.error('Usage: parad insert <table> <json>');
+        process.exit(1);
+      }
       const row = JSON.parse(jsonData);
-      const engine = getEngine();
-      engine.open(passphrase);
-      const id = engine.insert(table, row);
+      const conn = await connect({});
+      const id = conn.engine.insert(table, row);
       output({ inserted_id: id }, jsonMode);
-      engine.close();
+      conn.close();
       break;
     }
     case 'select': {
       const table = cleanArgs[1];
-      if (!table) { console.error('Usage: tgdb select <table>'); process.exit(1); }
+      if (!table) {
+        console.error('Usage: parad select <table>');
+        process.exit(1);
+      }
       const whereStr = cleanArgs[2];
       const where = whereStr ? JSON.parse(whereStr) : undefined;
-      const engine = getEngine();
-      engine.open(passphrase);
-      const rows = engine.select(table, where);
+      const conn = await connect({});
+      const rows = conn.engine.select(table, where);
       output(rows, jsonMode);
-      engine.close();
+      conn.close();
       break;
     }
     case 'update': {
       const table = cleanArgs[1];
       const setStr = cleanArgs[2];
       const whereStr = cleanArgs[3];
-      if (!table || !setStr || !whereStr) { console.error('Usage: tgdb update <table> <set> <where>'); process.exit(1); }
-      const set = JSON.parse(setStr);
-      const where = JSON.parse(whereStr);
-      const engine = getEngine();
-      engine.open(passphrase);
-      const changes = engine.update(table, set, where);
+      if (!table || !setStr || !whereStr) {
+        console.error('Usage: parad update <table> <set> <where>');
+        process.exit(1);
+      }
+      const conn = await connect({});
+      const changes = conn.engine.update(table, JSON.parse(setStr), JSON.parse(whereStr));
       output({ changes }, jsonMode);
-      engine.close();
+      conn.close();
       break;
     }
     case 'delete': {
       const table = cleanArgs[1];
       const whereStr = cleanArgs.slice(2).join(' ');
-      if (!table || !whereStr) { console.error('Usage: tgdb delete <table> <where>'); process.exit(1); }
-      const where = JSON.parse(whereStr);
-      const engine = getEngine();
-      engine.open(passphrase);
-      const changes = engine.delete(table, where);
-      output({ changes }, jsonMode);
-      engine.close();
-      break;
-    }
-    case 'sync': {
-      const config = loadConfig();
-      const dbPath = resolveDbPath();
-      config.database_path = dbPath;
-      const engine = new ClientEngine(config);
-      engine.open(passphrase);
-      const tracker = new ChangeTracker(engine);
-      tracker.startSession();
-      const changeset = tracker.exportChangeset();
-      const syncManager = new SyncManager(config);
-      let pushResult: { success: boolean; error?: string; version?: number } | null = null;
-      if (changeset && changeset.length > 0) {
-        pushResult = await syncManager.push(changeset);
-        if (pushResult.success) {
-          tracker.truncateBuffer();
-        }
+      if (!table || !whereStr) {
+        console.error('Usage: parad delete <table> <where>');
+        process.exit(1);
       }
-      const pulled = await syncManager.pullLatest();
-      engine.close();
-      output({ pushed: pushResult, pulled }, jsonMode);
+      const conn = await connect({});
+      const changes = conn.engine.delete(table, JSON.parse(whereStr));
+      output({ changes }, jsonMode);
+      conn.close();
       break;
     }
     case 'push': {
-      const config = loadConfig();
-      const dbPath = resolveDbPath();
-      config.database_path = dbPath;
-      const engine = new ClientEngine(config);
-      engine.open(passphrase);
-      const tracker = new ChangeTracker(engine);
-      tracker.startSession();
-      const changeset = tracker.exportChangeset();
-      const syncManager = new SyncManager(config);
-      let result: { success: boolean; error?: string; version?: number };
-      if (changeset && changeset.length > 0) {
-        result = await syncManager.push(changeset);
-        if (result.success) {
-          tracker.truncateBuffer();
-        }
-      } else {
-        result = await syncManager.pushFullDatabase();
-      }
-      engine.close();
-      output(result, jsonMode);
+      const conn = await connect({});
+      const version = await conn.push();
+      output({ pushed: version !== null, version }, jsonMode);
+      conn.close();
       break;
     }
     case 'pull': {
-      const config = loadConfig();
-      const syncManager = new SyncManager(config);
-      const version = cleanArgs[1] ? parseInt(cleanArgs[1]) : undefined;
-      const ok = version ? await syncManager.pullVersion(version) : await syncManager.pullLatest();
-      output({ pulled: ok, version: version || 'latest' }, jsonMode);
+      const conn = await connect({});
+      const versionArg = cleanArgs[1];
+      let pulled: boolean;
+      if (versionArg) {
+        pulled = await conn.pullVersion(parseInt(versionArg, 10));
+      } else {
+        pulled = await conn.pull();
+      }
+      output({ pulled }, jsonMode);
+      conn.close();
+      break;
+    }
+    case 'sync': {
+      const conn = await connect({});
+      const pushed = await conn.push();
+      const pulled = await conn.pull();
+      output({ pushed, pulled }, jsonMode);
+      conn.close();
       break;
     }
     case 'status': {
-      const config = loadConfig();
-      const syncManager = new SyncManager(config);
-      const status = await syncManager.getStatus();
-      if (!status) {
-        output({ error: 'Could not fetch status' }, jsonMode);
-        break;
-      }
-      const dbPath = config.database_path.replace(/^~/, os.homedir());
-      const localExists = fs.existsSync(dbPath);
-      const enriched = {
-        ...status,
-        databases: status.databases.map((d: any) => ({
-          ...d,
-          local_version: syncManager.getLocalVersion(),
-          is_stale: syncManager.isLocalStale(),
-          local_file_exists: localExists,
-        })),
-      };
-      output(enriched, jsonMode);
-      break;
-    }
-    case 'logs': {
-      const logDir = path.join(os.homedir(), '.paradox', 'logs');
-      if (fs.existsSync(logDir)) {
-        const files = fs.readdirSync(logDir);
-        output({ log_files: files, log_dir: logDir }, jsonMode);
-      } else {
-        output({ message: 'No logs found' }, jsonMode);
+      const cfg = loadConfig();
+      const base = cfg.sync.gateway_url.replace(/\/+$/, '');
+      try {
+        const gw = new GatewayClient(base, cfg.sync.api_key);
+        const status = await gw.status();
+        const enriched = {
+          ...status,
+          databases: status.databases.map((d) => ({
+            ...d,
+            local_version: state.getRemoteVersion(d.name),
+            dirty: state.isDirty(d.name),
+            offline: state.isOffline(d.name),
+          })),
+        };
+        output(enriched, jsonMode);
+      } catch (err) {
+        output({ error: `Could not fetch status: ${err instanceof Error ? err.message : String(err)}` }, jsonMode);
       }
       break;
     }
     case 'versions': {
-      const config = loadConfig();
-      const syncManager = new SyncManager(config);
-      const baseUrl = config.sync.gateway_url.replace(/\/+$/, '');
-      const params = new URLSearchParams();
-      params.set('database_name', path.basename(config.database_path));
-      const url = `${baseUrl}/v1/versions?${params.toString()}`;
+      const cfg = loadConfig();
+      const base = cfg.sync.gateway_url.replace(/\/+$/, '');
       try {
-        const data = await syncManager.httpGetJSON(url, config.sync.api_key);
+        const gw = new GatewayClient(base, cfg.sync.api_key);
+        const data = await gw.versions(path.basename(cfg.database_path).replace(/\.db$/, ''));
         output(data, jsonMode);
-      } catch {
-        output({ error: 'Could not fetch versions' }, jsonMode);
+      } catch (err) {
+        output({ error: `Could not fetch versions: ${err instanceof Error ? err.message : String(err)}` }, jsonMode);
       }
       break;
     }
     case 'rollback': {
-      const version = parseInt(cleanArgs[1]);
-      if (!version) { console.error('Usage: tgdb rollback <version>'); process.exit(1); }
-      const config = loadConfig();
-      const syncManager = new SyncManager(config);
-      const baseUrl = config.sync.gateway_url.replace(/\/+$/, '');
-      const url = `${baseUrl}/v1/rollback`;
+      const version = parseInt(cleanArgs[1], 10);
+      if (!version) {
+        console.error('Usage: parad rollback <version>');
+        process.exit(1);
+      }
+      const cfg = loadConfig();
+      const base = cfg.sync.gateway_url.replace(/\/+$/, '');
       try {
-        const result = await syncManager.httpPostJSON(url, {
-          database_name: path.basename(config.database_path),
-          target_version: version,
-        }, config.sync.api_key);
-        if (result.status === 200) {
-          await syncManager.pullVersion(version);
-          output({ rolled_back_to: version, success: true }, jsonMode);
-        } else {
-          output({ error: result.data?.detail || 'rollback_failed', status: result.status }, jsonMode);
-        }
-      } catch (err: any) {
-        output({ error: err.message }, jsonMode);
+        const gw = new GatewayClient(base, cfg.sync.api_key);
+        await gw.rollback(path.basename(cfg.database_path).replace(/\.db$/, ''), version);
+        const conn = await connect({});
+        await conn.pull();
+        conn.close();
+        output({ rolled_back_to: version, success: true }, jsonMode);
+      } catch (err) {
+        output({ error: `Rollback failed: ${err instanceof Error ? err.message : String(err)}` }, jsonMode);
       }
       break;
     }
     case 'config': {
       const sub = cleanArgs[1];
       if (sub === 'show') {
-        const config = loadConfig();
-        output(config, jsonMode);
+        output(loadConfig(), jsonMode);
       } else if (sub === 'set') {
         const key = cleanArgs[2];
         const value = cleanArgs[3];
-        if (!key || !value) { console.error('Usage: tgdb config set <key> <value>'); process.exit(1); }
+        if (!key || !value) {
+          console.error('Usage: parad config set <key> <value>');
+          process.exit(1);
+        }
         const config = loadConfig();
         const keys = key.split('.');
         let obj: any = config;
@@ -329,27 +265,31 @@ async function main() {
         saveConfig(config);
         output({ updated: key, value }, jsonMode);
       } else {
-        console.error('Usage: tgdb config <show|set>');
+        console.error('Usage: parad config <show|set>');
+        process.exit(1);
       }
       break;
     }
     case 'shell': {
-      const readline = require('readline');
-      const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: 'tgdb> ' });
-      const engine = getEngine();
-      engine.open(passphrase);
+      const rl = readline.createInterface({ input: stdin, output: stdout, prompt: 'parad> ' });
+      const conn = await connect({});
       console.log('Paradox-DB interactive shell. Type "help" for commands, "exit" to quit.');
       rl.prompt();
-      rl.on('line', (line: string) => {
+      rl.on('line', async (line: string) => {
         const trimmed = line.trim();
-        if (trimmed === 'exit' || trimmed === 'quit') { engine.close(); process.exit(0); }
+        if (trimmed === 'exit' || trimmed === 'quit') {
+          conn.close();
+          process.exit(0);
+        }
         if (trimmed === 'help') console.log('Commands: <sql>, help, exit');
         else if (trimmed) {
           try {
-            const result = engine.execute(trimmed);
+            const result = conn.execute(trimmed);
             if (result.rows.length > 0) console.table(result.rows);
             else console.log(`OK (${result.changes} changes)`);
-          } catch (e: any) { console.error(`Error: ${e.message}`); }
+          } catch (e: any) {
+            console.error(`Error: ${e.message}`);
+          }
         }
         rl.prompt();
       });
@@ -371,4 +311,7 @@ async function main() {
   }
 }
 
-main().catch(err => { console.error(err); process.exit(1); });
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

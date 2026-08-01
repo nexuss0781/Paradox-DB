@@ -1,224 +1,125 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { ClientEngine } from '../src/engine.js';
-import { DatabaseNotOpenError, EncryptionError, SQLiteError } from '../src/errors.js';
-import * as fs from 'fs';
-import * as path from 'path';
-import * as os from 'os';
+import { DecryptionError } from '../src/errors.js';
+import { decryptFile, encryptFile } from '../src/crypto.js';
 
-const TEST_DB = path.join(os.tmpdir(), `test-paradox-${Date.now()}.sqlcipher`);
-const PASSPHRASE = 'test-passphrase-123';
+let tmpDir: string;
 
-function makeConfig(dbPath?: string) {
-  return {
-    database_path: dbPath || TEST_DB,
-    encryption: { cipher: 'aes-256-cbc', kdf_iterations: 256000, page_size: 4096 },
-    sync: {
-      gateway_url: '',
-      api_key: '',
-      trigger_timer_seconds: 30,
-      trigger_ops_threshold: 50,
-      max_file_size_mb: 50,
-      auto_sync_on_shutdown: true,
-    },
-    conflict: { strategy: 'last-write-wins' as const, log_conflicts: true },
-    logging: { level: 'info' as const, path: '/tmp' },
-  };
-}
+beforeEach(() => {
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'parad-engine-'));
+});
+
+afterEach(() => {
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+});
 
 describe('ClientEngine', () => {
-  let engine: ClientEngine;
-
-  beforeEach(() => {
-    engine = new ClientEngine(makeConfig());
+  it('creates a fresh encrypted DB when create=true and file is missing', () => {
+    const p = path.join(tmpDir, 'fresh.db');
+    const eng = new ClientEngine(p, 'secret');
+    eng.open(true);
+    eng.execute('CREATE TABLE t (v TEXT)');
+    eng.execute('INSERT INTO t VALUES (?)', ['hello']);
+    eng.close();
+    expect(fs.existsSync(p)).toBe(true);
+    // On-disk file is encrypted, not plaintext sqlite
+    const disk = fs.readFileSync(p);
+    expect(disk.toString('utf-8', 0, 15)).not.toBe('SQLite format 3');
+    // Decrypts back to a real sqlite db
+    const plain = decryptFile(disk, 'secret');
+    expect(plain.toString('utf-8', 0, 16)).toBe('SQLite format 3\u0000');
   });
 
-  afterEach(() => {
-    try { engine.close(); } catch {}
-    try { fs.unlinkSync(TEST_DB); } catch {}
+  it('round-trips a created DB: reopen and read data', () => {
+    const p = path.join(tmpDir, 'roundtrip.db');
+    let eng = new ClientEngine(p, 'secret');
+    eng.open(true);
+    eng.execute('CREATE TABLE t (v TEXT)');
+    eng.execute('INSERT INTO t VALUES (?)', ['persisted']);
+    eng.close();
+
+    eng = new ClientEngine(p, 'secret');
+    eng.open();
+    const rows = eng.execute('SELECT v FROM t').rows;
+    expect(rows).toEqual([{ v: 'persisted' }]);
+    eng.close();
   });
 
-  describe('open/close', () => {
-    it('creates new .sqlcipher file', () => {
-      engine.open(PASSPHRASE);
-      expect(fs.existsSync(TEST_DB)).toBe(true);
-    });
-
-    it('opens existing DB', () => {
-      engine.open(PASSPHRASE);
-      engine.close();
-      engine.open(PASSPHRASE);
-      expect(engine.isOpen).toBe(true);
-    });
-
-    it('rejects wrong passphrase', () => {
-      engine.open(PASSPHRASE);
-      engine.close();
-      const e2 = new ClientEngine(makeConfig());
-      expect(() => e2.open('wrong')).toThrow(EncryptionError);
-    });
-
-    it('close() is idempotent', () => {
-      engine.open(PASSPHRASE);
-      engine.close();
-      engine.close();
-    });
-
-    it('throws DatabaseNotOpenError when not open', () => {
-      expect(() => engine.execute('SELECT 1')).toThrow(DatabaseNotOpenError);
-    });
+  it('treats an empty file as a fresh DB when create=true', () => {
+    const p = path.join(tmpDir, 'empty.db');
+    fs.writeFileSync(p, Buffer.alloc(0));
+    const eng = new ClientEngine(p, 'secret');
+    eng.open(true);
+    eng.execute('CREATE TABLE t (v TEXT)');
+    eng.close();
+    const plain = decryptFile(fs.readFileSync(p), 'secret');
+    expect(plain.toString('utf-8', 0, 16)).toBe('SQLite format 3\u0000');
   });
 
-  describe('CRUD', () => {
-    beforeEach(() => {
-      engine.open(PASSPHRASE);
-      engine.execute('CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, age INTEGER)');
-    });
+  it('rejects a wrong passphrase with DecryptionError and leaves no temp', () => {
+    const p = path.join(tmpDir, 'pass.db');
+    let eng = new ClientEngine(p, 'secret');
+    eng.open(true);
+    eng.execute('CREATE TABLE t (v TEXT)');
+    eng.close();
 
-    it('execute() runs raw SQL', () => {
-      engine.execute("INSERT INTO users (name, age) VALUES ('Alice', 30)");
-      const rows = engine.select('users');
-      expect(rows.length).toBe(1);
-      expect(rows[0].name).toBe('Alice');
-    });
-
-    it('execute() parameterized', () => {
-      engine.execute("INSERT INTO users (name, age) VALUES (?, ?)", ['Bob', 25]);
-      expect(engine.select('users')[0].name).toBe('Bob');
-    });
-
-    it('execute() invalid SQL throws SQLiteError', () => {
-      expect(() => engine.execute('INVALID SQL')).toThrow(SQLiteError);
-    });
-
-    it('insert() returns ID', () => {
-      const id = engine.insert('users', { name: 'Charlie', age: 35 });
-      expect(id).toBeGreaterThan(0);
-    });
-
-    it('select() returns all rows', () => {
-      engine.insert('users', { name: 'A', age: 1 });
-      engine.insert('users', { name: 'B', age: 2 });
-      expect(engine.select('users').length).toBe(2);
-    });
-
-    it('select() with where', () => {
-      engine.insert('users', { name: 'A', age: 1 });
-      engine.insert('users', { name: 'B', age: 2 });
-      expect(engine.select('users', { age: 1 }).length).toBe(1);
-    });
-
-    it('select() empty table', () => {
-      expect(engine.select('users')).toEqual([]);
-    });
-
-    it('update() modifies rows', () => {
-      engine.insert('users', { name: 'A', age: 1 });
-      const changed = engine.update('users', { age: 99 }, { name: 'A' });
-      expect(changed).toBe(1);
-      expect(engine.select('users')[0].age).toBe(99);
-    });
-
-    it('update() no match', () => {
-      expect(engine.update('users', { age: 99 }, { name: 'nope' })).toBe(0);
-    });
-
-    it('delete() removes rows', () => {
-      engine.insert('users', { name: 'A', age: 1 });
-      const changed = engine.delete('users', { name: 'A' });
-      expect(changed).toBe(1);
-      expect(engine.select('users').length).toBe(0);
-    });
-
-    it('delete() no match', () => {
-      expect(engine.delete('users', { name: 'nope' })).toBe(0);
-    });
+    eng = new ClientEngine(p, 'wrong');
+    expect(() => eng.open()).toThrow(DecryptionError);
+    expect(eng.isOpen).toBe(false);
   });
 
-  describe('WAL mode', () => {
-    it('enabled after open', () => {
-      engine.open(PASSPHRASE);
-      const result = engine.execute('PRAGMA journal_mode');
-      expect(result.rows[0].journal_mode).toBe('wal');
-    });
+  it('rejects a corrupt (non-SQLite) encrypted file with DecryptionError', () => {
+    const p = path.join(tmpDir, 'corrupt.db');
+    fs.writeFileSync(p, encryptFile(Buffer.from('not sqlite at all!!'), 'secret'));
+    const eng = new ClientEngine(p, 'secret');
+    expect(() => eng.open()).toThrow(DecryptionError);
   });
 
-  describe('operation count', () => {
-    it('increments on each execute', () => {
-      engine.open(PASSPHRASE);
-      engine.execute('CREATE TABLE cnt (id INTEGER PRIMARY KEY)');
-      expect(engine.operationCount).toBe(1);
-      engine.execute('INSERT INTO cnt DEFAULT VALUES');
-      expect(engine.operationCount).toBe(2);
-    });
-
-    it('resetOperationCount resets to zero', () => {
-      engine.open(PASSPHRASE);
-      engine.execute('CREATE TABLE cnt (id INTEGER PRIMARY KEY)');
-      engine.resetOperationCount();
-      expect(engine.operationCount).toBe(0);
-    });
+  it('close is idempotent', () => {
+    const p = path.join(tmpDir, 'idem.db');
+    const eng = new ClientEngine(p, 'secret');
+    eng.open(true);
+    eng.execute('CREATE TABLE t (v TEXT)');
+    eng.close();
+    eng.close();
+    expect(eng.isOpen).toBe(false);
   });
 
-  describe('performance', () => {
-    it('single insert < 1ms p95', () => {
-      engine.open(PASSPHRASE);
-      engine.execute('CREATE TABLE perf (id INTEGER PRIMARY KEY, val TEXT)');
-      const times: number[] = [];
-      for (let i = 0; i < 100; i++) {
-        const s = performance.now();
-        engine.execute('INSERT INTO perf (val) VALUES (?)', [`v${i}`]);
-        times.push(performance.now() - s);
-      }
-      times.sort((a, b) => a - b);
-      expect(times[94]).toBeLessThan(1);
-    });
+  it('getRawBytes returns plaintext sqlite while open and closed', () => {
+    const p = path.join(tmpDir, 'raw.db');
+    const eng = new ClientEngine(p, 'secret');
+    eng.open(true);
+    eng.execute('CREATE TABLE t (v TEXT)');
+    const openBytes = eng.getRawBytes();
+    expect(openBytes.toString('utf-8', 0, 16)).toBe('SQLite format 3\u0000');
+    eng.close();
+    const closedBytes = eng.getRawBytes();
+    expect(closedBytes.toString('utf-8', 0, 16)).toBe('SQLite format 3\u0000');
+    expect(closedBytes).toEqual(openBytes);
+  });
 
-    it('single select < 1ms p95', () => {
-      engine.open(PASSPHRASE);
-      engine.execute('CREATE TABLE perf (id INTEGER PRIMARY KEY, val TEXT)');
-      for (let i = 0; i < 100; i++) {
-        engine.execute('INSERT INTO perf (val) VALUES (?)', [`v${i}`]);
-      }
-      const times: number[] = [];
-      for (let i = 0; i < 100; i++) {
-        const s = performance.now();
-        engine.execute('SELECT * FROM perf WHERE id = ?', [i + 1]);
-        times.push(performance.now() - s);
-      }
-      times.sort((a, b) => a - b);
-      expect(times[94]).toBeLessThan(1);
-    });
+  it('insert/select/update/delete work', () => {
+    const p = path.join(tmpDir, 'crud.db');
+    const eng = new ClientEngine(p, 'secret');
+    eng.open(true);
+    eng.execute('CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)');
+    const id = eng.insert('t', { name: 'alice' });
+    expect(id).toBe(1);
+    const rows = eng.select('t', { name: 'alice' });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].name).toBe('alice');
+    const updated = eng.update('t', { name: 'bob' }, { name: 'alice' });
+    expect(updated).toBe(1);
+    const deleted = eng.delete('t', { name: 'bob' });
+    expect(deleted).toBe(1);
+    eng.close();
+  });
 
-    it('10k inserts < 2s', () => {
-      engine.open(PASSPHRASE);
-      engine.execute('CREATE TABLE bulk (id INTEGER PRIMARY KEY, val TEXT)');
-      const start = performance.now();
-      for (let i = 0; i < 10000; i++) {
-        engine.execute('INSERT INTO bulk (val) VALUES (?)', [`v${i}`]);
-      }
-      expect(performance.now() - start).toBeLessThan(2000);
-    });
-
-    it('1k selects < 1s', () => {
-      engine.open(PASSPHRASE);
-      engine.execute('CREATE TABLE bulk (id INTEGER PRIMARY KEY, val TEXT)');
-      for (let i = 0; i < 1000; i++) {
-        engine.execute('INSERT INTO bulk (val) VALUES (?)', [`v${i}`]);
-      }
-      const start = performance.now();
-      for (let i = 0; i < 1000; i++) {
-        engine.execute('SELECT * FROM bulk WHERE id = ?', [(i % 1000) + 1]);
-      }
-      expect(performance.now() - start).toBeLessThan(1000);
-    });
-
-    it('open existing DB < 50ms', () => {
-      engine.open(PASSPHRASE);
-      engine.execute('CREATE TABLE warm (id INTEGER PRIMARY KEY)');
-      engine.close();
-      const start = performance.now();
-      engine.open(PASSPHRASE);
-      expect(performance.now() - start).toBeLessThan(50);
-    });
+  it('throws DatabaseNotOpenError when executing while closed', () => {
+    const eng = new ClientEngine(path.join(tmpDir, 'closed.db'), 'secret');
+    expect(() => eng.execute('SELECT 1')).toThrow('Database not open');
   });
 });

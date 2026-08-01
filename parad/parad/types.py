@@ -36,6 +36,7 @@ class LoggingConfig(BaseModel):
 class Config(BaseModel):
     database_path: str = "~/.paradox/data.db"
     project_id: str = ""
+    project_name: str = ""
     database_id: str = ""
     encryption: EncryptionConfig = EncryptionConfig()
     sync: SyncConfig = SyncConfig()

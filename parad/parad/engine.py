@@ -4,7 +4,7 @@ import os
 import sqlite3
 import tempfile
 from pathlib import Path
-from parad.crypto import encrypt_file, decrypt_file
+from parad.crypto import encrypt_file, decrypt_file, DecryptionError
 
 
 class Engine:
@@ -20,15 +20,44 @@ class Engine:
         self._conn: sqlite3.Connection | None = None
         self._tmp_path: str | None = None
 
+    @property
+    def is_open(self) -> bool:
+        """Whether the engine currently has a live SQLite connection."""
+        return self._conn is not None
+
+    def _cleanup_tmp(self):
+        """Unlink the temp file, if any, and reset _tmp_path."""
+        if self._tmp_path:
+            try:
+                os.unlink(self._tmp_path)
+            except FileNotFoundError:
+                pass
+            self._tmp_path = None
+
     def _decrypt_to_temp(self) -> str:
-        """Decrypt DB to a temp file, return path."""
+        """Decrypt DB to a temp file, return path.
+
+        Raises :class:`DecryptionError` (a ValueError subclass) when the
+        file cannot be decrypted — wrong passphrase or corrupt data.  No
+        temp file is created in that case, so no half-open state remains.
+        """
         if not self.db_path.exists():
             raise FileNotFoundError(f"Database not found: {self.db_path}")
         encrypted = self.db_path.read_bytes()
-        decrypted = decrypt_file(encrypted, self.passphrase)
+        try:
+            decrypted = decrypt_file(encrypted, self.passphrase)
+        except DecryptionError as exc:
+            raise DecryptionError(
+                f"Cannot open {self.db_path}: {exc}"
+            ) from exc
         tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-        tmp.write(decrypted)
-        tmp.close()
+        try:
+            tmp.write(decrypted)
+            tmp.close()
+        except OSError:
+            tmp.close()
+            os.unlink(tmp.name)
+            raise
         self._tmp_path = tmp.name
         return self._tmp_path
 
@@ -42,29 +71,58 @@ class Engine:
         self.db_path.write_bytes(encrypted)
 
     def open(self, create: bool = False) -> sqlite3.Connection:
-        """Open the encrypted database. If create=True and file doesn't exist, create new."""
-        if create and not self.db_path.exists():
-            self.db_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
-            tmp.close()
-            self._tmp_path = tmp.name
-            self._conn = sqlite3.connect(self._tmp_path, check_same_thread=False)
+        """Open the encrypted database.
+
+        - If the file does not exist and ``create=True``, a fresh SQLite
+          database is created.
+        - If the file exists but is empty (0 bytes) and ``create=True``,
+          it is treated as a fresh database and a new SQLite file is
+          created — a partially-initialized connection string (e.g. a
+          0-byte file left by ``touch``) therefore does not explode.
+        - If the file exists and is non-empty, it is decrypted; a wrong
+          passphrase or corrupt data raises ``DecryptionError`` and the
+          engine is left fully closed (no temp file, no connection).
+        - Calling ``open()`` while already open is a no-op returning the
+          current connection.
+        """
+        if self.is_open:
+            return self._conn
+        self._cleanup_tmp()
+        try:
+            if create and (
+                not self.db_path.exists() or self.db_path.stat().st_size == 0
+            ):
+                self.db_path.parent.mkdir(parents=True, exist_ok=True)
+                tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+                tmp.close()
+                self._tmp_path = tmp.name
+                self._conn = sqlite3.connect(self._tmp_path, check_same_thread=False)
+                self._conn.row_factory = sqlite3.Row
+                return self._conn
+            tmp_path = self._decrypt_to_temp()
+            self._conn = sqlite3.connect(tmp_path, check_same_thread=False)
             self._conn.row_factory = sqlite3.Row
             return self._conn
-        tmp_path = self._decrypt_to_temp()
-        self._conn = sqlite3.connect(tmp_path, check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
-        return self._conn
+        except Exception:
+            self._conn = None
+            self._cleanup_tmp()
+            raise
 
     def close(self):
-        """Close and re-encrypt."""
-        if self._conn:
-            self._conn.close()
-            self._conn = None
+        """Close the connection and re-encrypt the temp file to disk.
+
+        Idempotent: safe to call any number of times, and a no-op when
+        nothing is open.  Never raises when ``_conn`` is ``None``.
+        """
+        if self._conn is not None:
+            try:
+                self._conn.close()
+            finally:
+                self._conn = None
+        if not self._tmp_path:
+            return
         self._encrypt_from_temp()
-        if self._tmp_path:
-            os.unlink(self._tmp_path)
-            self._tmp_path = None
+        self._cleanup_tmp()
 
     def __enter__(self):
         self.open()
@@ -121,7 +179,13 @@ class Engine:
         return self.execute(sql, params)
 
     def get_raw_bytes(self) -> bytes:
-        """Get the encrypted database as raw bytes (for push)."""
+        """Return the current PLAINTEXT SQLite bytes (not encrypted).
+
+        When the engine is open this is the live temp-file contents — the
+        exact bytes that get uploaded to the gateway (which re-encrypts
+        or hashes them).  When the engine is closed, the on-disk file is
+        decrypted and its plaintext returned.
+        """
         if self._tmp_path:
             return Path(self._tmp_path).read_bytes()
         if self.db_path.exists():

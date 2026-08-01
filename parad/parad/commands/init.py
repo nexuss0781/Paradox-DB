@@ -2,7 +2,8 @@
 
 import click
 from pathlib import Path
-from parad.config import load_config, save_config, CONFIG_DIR, gateway_db_name, set_config_value
+from parad.config import load_config, save_config, config_dir, gateway_db_name, set_config_value
+from parad.connection import db_state_key
 from parad.engine import Engine
 from parad.gateway import GatewayClient, GatewayError
 from parad.state import set_remote_version, set_last_local_hash
@@ -115,9 +116,10 @@ def init(name: str, passphrase: str, gateway: str | None, project: str | None, d
     database_id = _find_or_create_database(gw, project_id, name)
 
     # Step 4: Create local encrypted database
-    db_path = CONFIG_DIR / f"{name}.db"
+    db_path = config_dir() / f"{name}.db"
     config.database_path = str(db_path)
     config.project_id = project_id
+    config.project_name = project_name
     config.database_id = database_id
 
     engine = Engine(str(db_path), passphrase)
@@ -133,11 +135,12 @@ def init(name: str, passphrase: str, gateway: str | None, project: str | None, d
     raw = engine.get_raw_bytes()
     engine.close()
 
+    state_key = db_state_key(name, project_name or None)
     try:
-        result = gw.upload(name, raw)
+        result = gw.upload(name, raw, database_id=database_id, project_id=project_id)
         ver = result.version
-        set_remote_version(name, ver)
-        set_last_local_hash(name, _file_hash(db_path))
+        set_remote_version(state_key, ver)
+        set_last_local_hash(state_key, _file_hash(db_path))
         click.echo(f"✓ Pushed to gateway v{ver}")
     except GatewayError as e:
         click.echo(f"⚠ Push failed: {e}")

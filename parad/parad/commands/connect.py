@@ -2,7 +2,8 @@
 
 import click
 from pathlib import Path
-from parad.config import load_config, save_config, CONFIG_DIR, gateway_db_name, set_config_value
+from parad.config import load_config, save_config, config_dir, gateway_db_name, set_config_value
+from parad.connection import db_state_key
 from parad.engine import Engine
 from parad.gateway import GatewayClient, GatewayError
 from parad.state import get_remote_version, set_remote_version, set_last_local_hash
@@ -49,14 +50,14 @@ def _ensure_auth(config):
     return gw
 
 
-def _resolve_database_by_name(gw, config, db_name: str) -> tuple[str, str] | None:
-    """Find project_id and database_id by scanning projects/databases. Returns (project_id, database_id) or None."""
+def _resolve_database_by_name(gw, config, db_name: str) -> tuple[str, str, str] | None:
+    """Find project_id, project_name, database_id by scanning projects/databases. Returns (project_id, project_name, database_id) or None."""
     projects = gw.list_projects()
     for p in projects:
         databases = gw.list_databases(p["id"])
         for db in databases:
             if db.get("name") == db_name:
-                return p["id"], db["id"]
+                return p["id"], p.get("name", p["id"]), db["id"]
     return None
 
 
@@ -78,7 +79,7 @@ def connect(name: str, passphrase: str, no_watch: bool, do_watch: bool):
     Finds the database on gateway by name, syncs locally, and starts the watcher daemon.
     """
     config = load_config()
-    db_path = CONFIG_DIR / f"{name}.db"
+    db_path = config_dir() / f"{name}.db"
 
     # Step 1: Auto-authenticate
     gw = _ensure_auth(config)
@@ -88,8 +89,9 @@ def connect(name: str, passphrase: str, no_watch: bool, do_watch: bool):
     resolved = _resolve_database_by_name(gw, config, name)
 
     if resolved:
-        project_id, database_id = resolved
+        project_id, project_name, database_id = resolved
         config.project_id = project_id
+        config.project_name = project_name
         config.database_id = database_id
     else:
         click.echo(f"✗ Database '{name}' not found on gateway.")
@@ -100,17 +102,19 @@ def connect(name: str, passphrase: str, no_watch: bool, do_watch: bool):
     config.database_path = str(db_path)
     save_config(config)
 
+    state_key = db_state_key(name, config.project_name or None)
+
     # Step 4: Ensure local file exists
     if not db_path.exists():
         click.echo("Local file not found, pulling from gateway...")
         try:
-            dl = gw.download(name)
+            dl = gw.download(name, database_id=config.database_id, project_id=config.project_id)
             db_path.parent.mkdir(parents=True, exist_ok=True)
             from parad.crypto import encrypt_file
             db_path.write_bytes(encrypt_file(dl.bytes, passphrase))
             if dl.version is not None:
-                set_remote_version(name, dl.version)
-            set_last_local_hash(name, _file_hash(db_path))
+                set_remote_version(state_key, dl.version)
+            set_last_local_hash(state_key, _file_hash(db_path))
             ver = f"v{dl.version}" if dl.version else "latest"
             click.echo(f"✓ Pulled {ver} ({len(dl.bytes)} bytes)")
         except GatewayError as e:
@@ -120,15 +124,15 @@ def connect(name: str, passphrase: str, no_watch: bool, do_watch: bool):
     else:
         click.echo(f"✓ Found local database: {db_path}")
         # Sync state if needed
-        if get_remote_version(name) is None:
+        if get_remote_version(state_key) is None:
             engine = Engine(str(db_path), passphrase)
             engine.open()
             raw = engine.get_raw_bytes()
             engine.close()
             try:
-                result = gw.upload(name, raw)
-                set_remote_version(name, result.version)
-                set_last_local_hash(name, _file_hash(db_path))
+                result = gw.upload(name, raw, database_id=config.database_id, project_id=config.project_id)
+                set_remote_version(state_key, result.version)
+                set_last_local_hash(state_key, _file_hash(db_path))
                 click.echo(f"✓ Synced to gateway v{result.version}")
             except GatewayError as e:
                 click.echo(f"⚠ Sync failed: {e}")
@@ -147,7 +151,7 @@ def connect(name: str, passphrase: str, no_watch: bool, do_watch: bool):
             click.echo(f"✓ Auto-sync daemon started (pid={daemon_pid})")
 
     # Step 6: Print connection info
-    local_ver = get_remote_version(name)
+    local_ver = get_remote_version(state_key)
     ver_str = f"v{local_ver}" if local_ver else "unknown"
     url = f"parad://local/{name}?passphrase={passphrase}"
     daemon_status = f"running (PID {daemon_pid})" if daemon_pid else "not running"

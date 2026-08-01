@@ -1,97 +1,129 @@
 import Database from 'better-sqlite3';
-import * as crypto from 'crypto';
-import * as fs from 'fs';
-import * as path from 'path';
-import * as os from 'os';
-import { ClientConfig, QueryResult, SelectOptions } from './types.js';
-import { DatabaseNotOpenError, SQLiteError, EncryptionError } from './errors.js';
-import { ChangeTracker, ConflictInfo } from './change-tracker.js';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { decryptFile, encryptFile, DecryptionError } from './crypto.js';
+import { DatabaseNotOpenError, SQLiteError } from './errors.js';
 
 export class ClientEngine {
   private db: Database.Database | null = null;
-  private config: ClientConfig;
-  private dbPath: string;
+  private _passphrase: string;
+  dbPath: string;
+  private tmpPath: string | null = null;
   private _opCount = 0;
-  private _changeTracker: ChangeTracker | null = null;
 
-  constructor(config: ClientConfig) {
-    this.config = config;
-    this.dbPath = config.database_path;
+  constructor(dbPath: string, passphrase: string) {
+    this.dbPath = dbPath.replace(/^~/, os.homedir());
+    this._passphrase = passphrase;
   }
 
-  open(passphrase: string, dbPath?: string): void {
-    const target = dbPath || this.dbPath;
-    const resolved = target.replace(/^~/, os.homedir());
-    const dir = path.dirname(resolved);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-
-    try {
-      this.db = new Database(resolved);
-
-      const salt = crypto.createHash('sha256').update('paradox-salt').digest();
-      const key = crypto.pbkdf2Sync(passphrase, salt, this.config.encryption.kdf_iterations || 256000, 32, 'sha512');
-      const hexKey = key.toString('hex');
-
-      this.db.pragma(`cipher_key = "x'${hexKey}"`);
-      this.db.pragma(`cipher_page_size = ${this.config.encryption.page_size || 4096}`);
-      this.db.pragma('cipher_hmac_algorithm = HMAC_SHA512');
-      this.db.pragma('cipher_kdf_algorithm = PBKDF2_HMAC_SHA512');
-      this.db.pragma('journal_mode = WAL');
-    } catch (err: any) {
-      this.db = null;
-      if (
-        err.message?.includes('cipher') ||
-        err.message?.includes('key') ||
-        err.message?.includes('not a database') ||
-        err.message?.includes('file is not a database')
-      ) {
-        throw new EncryptionError();
+  private cleanupTmp(): void {
+    if (this.tmpPath) {
+      try {
+        fs.unlinkSync(this.tmpPath);
+      } catch {
+        // already gone
       }
-      throw new SQLiteError(err.message, err);
+      this.tmpPath = null;
+    }
+  }
+
+  private decryptToTemp(): string {
+    if (!fs.existsSync(this.dbPath)) {
+      throw new Error(`Database not found: ${this.dbPath}`);
+    }
+    const encrypted = fs.readFileSync(this.dbPath);
+    let decrypted: Buffer;
+    try {
+      decrypted = decryptFile(encrypted, this._passphrase);
+    } catch (err) {
+      if (err instanceof DecryptionError) {
+        throw new DecryptionError(`Cannot open ${this.dbPath}: ${err.message}`);
+      }
+      throw err;
+    }
+    const tmp = path.join(
+      os.tmpdir(),
+      `parad-tmp-${process.pid}-${Math.random().toString(36).slice(2)}.db`,
+    );
+    fs.writeFileSync(tmp, decrypted);
+    this.tmpPath = tmp;
+    return tmp;
+  }
+
+  private encryptFromTemp(): void {
+    if (!this.tmpPath) return;
+    const decrypted = fs.readFileSync(this.tmpPath);
+    const encrypted = encryptFile(decrypted, this._passphrase);
+    fs.mkdirSync(path.dirname(this.dbPath), { recursive: true });
+    fs.writeFileSync(this.dbPath, encrypted);
+  }
+
+  open(create = false): void {
+    if (this.db) return;
+    this.cleanupTmp();
+    try {
+      let target: string;
+      if (create && (!fs.existsSync(this.dbPath) || fs.statSync(this.dbPath).size === 0)) {
+        fs.mkdirSync(path.dirname(this.dbPath), { recursive: true });
+        const tmp = path.join(
+          os.tmpdir(),
+          `parad-tmp-${process.pid}-${Math.random().toString(36).slice(2)}.db`,
+        );
+        fs.writeFileSync(tmp, Buffer.alloc(0));
+        this.tmpPath = tmp;
+        target = tmp;
+      } else {
+        target = this.decryptToTemp();
+      }
+      this.db = new Database(target);
+    } catch (err) {
+      this.db = null;
+      this.cleanupTmp();
+      if (err instanceof DecryptionError) throw err;
+      throw new SQLiteError(err instanceof Error ? err.message : String(err), err as Error);
     }
   }
 
   close(): void {
-    if (!this.db) return;
-    try {
-      this.db.pragma('wal_checkpoint(FULL)');
-    } catch {
-      // checkpoint may fail on encrypted DBs without proper cipher; non-fatal
+    if (this.db) {
+      try {
+        this.db.pragma('wal_checkpoint(FULL)');
+      } catch {
+        // non-fatal
+      }
+      try {
+        this.db.close();
+      } catch {
+        // already closed
+      }
+      this.db = null;
     }
-    try {
-      this.db.close();
-    } catch {
-      // already closed
+    if (this.tmpPath) {
+      this.encryptFromTemp();
+      this.cleanupTmp();
     }
-    this.db = null;
   }
 
-  execute(sql: string, params?: any[]): QueryResult {
+  execute(sql: string, params?: any[]): { rows: any[]; changes: number; lastInsertRowid: number } {
     if (!this.db) throw new DatabaseNotOpenError();
     try {
-      if (params && params.length > 0) {
-        const stmt = this.db.prepare(sql);
-        const result = stmt.run(...params);
-        const trimmed = sql.trim().toUpperCase();
-        const rows =
-          trimmed.startsWith('SELECT') || trimmed.startsWith('PRAGMA')
-            ? stmt.all(...params)
-            : [];
+      const stmt = this.db.prepare(sql);
+      const trimmed = sql.trim().toUpperCase();
+      if (trimmed.startsWith('SELECT') || trimmed.startsWith('PRAGMA') || trimmed.startsWith('EXPLAIN')) {
+        const rows = params && params.length > 0 ? stmt.all(...params) : stmt.all();
         this._opCount++;
-        return {
-          rows,
-          changes: result.changes,
-          lastInsertRowid: Number(result.lastInsertRowid),
-        };
-      } else {
-        this.db.exec(sql);
-        this._opCount++;
-        return { rows: [], changes: 0, lastInsertRowid: 0 };
+        return { rows, changes: 0, lastInsertRowid: 0 };
       }
-    } catch (err: any) {
-      throw new SQLiteError(err.message, err);
+      const result = params && params.length > 0 ? stmt.run(...params) : stmt.run();
+      this._opCount++;
+      return {
+        rows: [],
+        changes: result.changes,
+        lastInsertRowid: Number(result.lastInsertRowid),
+      };
+    } catch (err) {
+      throw new SQLiteError(err instanceof Error ? err.message : String(err), err as Error);
     }
   }
 
@@ -101,16 +133,14 @@ export class ClientEngine {
     const placeholders = keys.map(() => '?').join(', ');
     const result = this.execute(
       `INSERT INTO ${table} (${keys.join(', ')}) VALUES (${placeholders})`,
-      values
+      values,
     );
-    this._changeTracker?.track('insert', table, row);
     return result.lastInsertRowid;
   }
 
-  select(table: string, where?: Record<string, any>, options?: SelectOptions): any[] {
+  select(table: string, where?: Record<string, any>, options?: { orderBy?: string; limit?: number; offset?: number }): any[] {
     let sql = `SELECT * FROM ${table}`;
     const params: any[] = [];
-
     if (where && Object.keys(where).length > 0) {
       const conditions = Object.entries(where).map(([k, v]) => {
         params.push(v);
@@ -121,36 +151,44 @@ export class ClientEngine {
     if (options?.orderBy) sql += ` ORDER BY ${options.orderBy}`;
     if (options?.limit) sql += ` LIMIT ${options.limit}`;
     if (options?.offset) sql += ` OFFSET ${options.offset}`;
-
     return this.execute(sql, params).rows;
   }
 
   update(table: string, set: Record<string, any>, where: Record<string, any>): number {
-    const setClauses = Object.entries(set).map(([k]) => `${k} = ?`);
+    const setClauses = Object.keys(set).map((k) => `${k} = ?`);
     const setValues = Object.values(set);
-    const whereClauses = Object.entries(where).map(([k]) => `${k} = ?`);
+    const whereClauses = Object.keys(where).map((k) => `${k} = ?`);
     const whereValues = Object.values(where);
-    const changes = this.execute(
+    return this.execute(
       `UPDATE ${table} SET ${setClauses.join(', ')} WHERE ${whereClauses.join(' AND ')}`,
-      [...setValues, ...whereValues]
+      [...setValues, ...whereValues],
     ).changes;
-    if (changes > 0) this._changeTracker?.track('update', table, undefined, where, set);
-    return changes;
   }
 
   delete(table: string, where: Record<string, any>): number {
-    const clauses = Object.entries(where).map(([k]) => `${k} = ?`);
+    const clauses = Object.keys(where).map((k) => `${k} = ?`);
     const values = Object.values(where);
-    const changes = this.execute(
-      `DELETE FROM ${table} WHERE ${clauses.join(' AND ')}`,
-      values
-    ).changes;
-    if (changes > 0) this._changeTracker?.track('delete', table, undefined, where);
-    return changes;
+    return this.execute(`DELETE FROM ${table} WHERE ${clauses.join(' AND ')}`, values).changes;
+  }
+
+  /** Return the current PLAINTEXT SQLite bytes (not encrypted). */
+  getRawBytes(): Buffer {
+    if (this.tmpPath) {
+      return fs.readFileSync(this.tmpPath);
+    }
+    if (fs.existsSync(this.dbPath)) {
+      const encrypted = fs.readFileSync(this.dbPath);
+      return decryptFile(encrypted, this._passphrase);
+    }
+    throw new Error(`Database not found: ${this.dbPath}`);
   }
 
   get isOpen(): boolean {
     return this.db !== null;
+  }
+
+  get passphrase(): string {
+    return this._passphrase;
   }
 
   get operationCount(): number {
@@ -159,25 +197,5 @@ export class ClientEngine {
 
   resetOperationCount(): void {
     this._opCount = 0;
-  }
-
-  get changeTracker(): ChangeTracker | null {
-    return this._changeTracker;
-  }
-
-  startTracking(): void {
-    this._changeTracker = new ChangeTracker(this);
-    this._changeTracker.startSession();
-  }
-
-  exportChangeset(): Buffer | null {
-    return this._changeTracker?.exportChangeset() ?? null;
-  }
-
-  importChangeset(patch: Buffer): { success: boolean; conflicts?: ConflictInfo } {
-    if (!this._changeTracker) {
-      this.startTracking();
-    }
-    return this._changeTracker!.importChangeset(patch);
   }
 }

@@ -4,6 +4,7 @@ import hashlib
 import click
 from pathlib import Path
 from parad.config import load_config, gateway_db_name
+from parad.connection import db_state_key
 from parad.crypto import encrypt_file
 from parad.gateway import GatewayClient, GatewayError
 from parad.state import load_state
@@ -15,6 +16,7 @@ def status():
     config = load_config()
     db_path = Path(config.database_path).expanduser()
     db_name = gateway_db_name(db_path)
+    state_key = db_state_key(db_name, getattr(config, "project_name", "") or None)
     gw = GatewayClient(config.sync.gateway_url, config.sync.api_key)
 
     try:
@@ -24,7 +26,7 @@ def status():
         raise SystemExit(1)
 
     # Load local sync state
-    local_state = load_state(db_name)
+    local_state = load_state(state_key)
     local_version = local_state.get("remote_version")
     last_sync = local_state.get("last_sync")
 
