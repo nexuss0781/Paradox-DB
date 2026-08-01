@@ -35,9 +35,28 @@ const rows = db.select('todos', { done: 0 }, { orderBy: 'id DESC', limit: 10 });
 await db.close(); // REQUIRED before exit — re-encrypts to disk, stops daemon
 ```
 
+Return shapes (exact — don't guess):
+
+```ts
+db.execute(sql, params?)    // → { rows: any[], changes: number, lastInsertRowid: number }
+db.insert(table, row)       // → number (lastInsertRowid)
+db.select(table, where?, options?)  // → any[] (array of row objects)
+db.update(table, set, where)// → number (rows changed)
+db.delete(table, where)     // → number (rows deleted)
+db.push()                   // → Promise<number | null> (remote version)
+db.pull()                   // → Promise<boolean> (true if local file replaced)
+```
+
+No `insertMany`/`upsert`/`get`(single row)/transaction helpers exist — use
+`execute()` (e.g. `db.execute('BEGIN') … db.execute('COMMIT')`; `commit()`/
+`rollback()` are no-ops).
+
 Options: `{ name, project, passphrase, url, dbPath, gatewayUrl, apiKey, autoSync,
 pullOnStartup, pushIntervalMs, pullIntervalMs }`. `pullOnStartup` hydrates the
 latest snapshot at boot (failures non-fatal).
+
+Config/state live at `~/.paradox/` (`$PARADOX_HOME` overrides): `config.json`
+plus one `<dbKey>.sync.json` per database — where to look when debugging sync.
 
 ## Connect resolution (first match wins)
 
@@ -124,6 +143,16 @@ Use `isConnectivityError(err)` to distinguish offline from deterministic errors.
 - `select(table, where)` interpolates object **keys as column names** — never
   pass untrusted identifiers there; values are always parameterized.
 - Default passphrase is literally `default`; set one for real deployments.
-- Sync works cross-language: a DB written by TS `parad` opens in Python `parad`.
+- Sync works cross-language: a DB written by TS `parad` opens in Python `parad`
+  (PyPI package `parad`; `connect` takes a `url=` **keyword**, not positional):
+
+  ```python
+  from parad import connect
+  db = connect(url="parad://me@example.com:secret@local/acme/myapp?passphrase=hunter2")
+  db.execute("INSERT INTO todos (task) VALUES (?)", ("ship it",))
+  print(db.execute("SELECT * FROM todos"))   # list[dict]
+  db.push(); db.close()                       # auto_sync default True
+  ```
+
 - Files on the gateway are full-file versions — every push sends the whole DB
   (default size cap 50 MB).
