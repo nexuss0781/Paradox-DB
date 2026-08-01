@@ -1,7 +1,7 @@
 {
-  "name": "@paradox/client",
-  "version": "0.1.0",
-  "description": "Paradox-DB local client engine",
+  "name": "parad",
+  "version": "1.0.0",
+  "description": "Paradox-DB local client engine — TypeScript SDK",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
