@@ -47,9 +47,8 @@ db.push()                   // → Promise<number | null> (remote version)
 db.pull()                   // → Promise<boolean> (true if local file replaced)
 ```
 
-No `insertMany`/`upsert`/`get`(single row)/transaction helpers exist — use
-`execute()` (e.g. `db.execute('BEGIN') … db.execute('COMMIT')`; `commit()`/
-`rollback()` are no-ops).
+No `insertMany`/`upsert`/`get` (single-row) helpers exist — use `execute()` for
+anything custom (transactions/no-op caveats in Gotchas).
 
 Options: `{ name, project, passphrase, url, dbPath, gatewayUrl, apiKey, autoSync,
 pullOnStartup, pushIntervalMs, pullIntervalMs }`. `pullOnStartup` hydrates the
