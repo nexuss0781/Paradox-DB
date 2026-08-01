@@ -3,17 +3,28 @@ import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import type { ClientConfig } from './types.js';
 
-const DEFAULT_CONFIG_PATH = join(homedir(), '.paradox', 'config.json');
+/** Current config directory, read at call time (PARADOX_HOME override). */
+export function configDir(): string {
+  const home = process.env.PARADOX_HOME || '~/.paradox';
+  return home === '~' ? homedir() : home.replace(/^~/, homedir());
+}
+
+function defaultConfigPath(): string {
+  return join(configDir(), 'config.json');
+}
 
 const DEFAULT_CONFIG: ClientConfig = {
-  database_path: join(homedir(), '.paradox', 'data.sqlcipher'),
+  database_path: join(homedir(), '.paradox', 'data.db'),
+  project_id: '',
+  project_name: '',
+  database_id: '',
   encryption: {
     cipher: 'aes-256-cbc',
     kdf_iterations: 256_000,
     page_size: 4096,
   },
   sync: {
-    gateway_url: 'http://localhost:8000/v1',
+    gateway_url: 'https://paradox-db.onrender.com/v1',
     api_key: '',
     trigger_timer_seconds: 30,
     trigger_ops_threshold: 50,
@@ -67,7 +78,7 @@ function deepMerge(target: Record<string, unknown>, source: Record<string, unkno
 }
 
 export function loadConfig(configPath?: string): ClientConfig {
-  const resolvedPath = configPath ?? DEFAULT_CONFIG_PATH;
+  const resolvedPath = configPath ?? defaultConfigPath();
 
   if (!existsSync(resolvedPath)) {
     return { ...DEFAULT_CONFIG };
@@ -80,11 +91,11 @@ export function loadConfig(configPath?: string): ClientConfig {
 }
 
 export function getDefaultConfigPath(): string {
-  return DEFAULT_CONFIG_PATH;
+  return defaultConfigPath();
 }
 
 export function saveConfig(config: ClientConfig, configPath?: string): void {
-  const resolvedPath = configPath ?? DEFAULT_CONFIG_PATH;
+  const resolvedPath = configPath ?? defaultConfigPath();
   const dir = dirname(resolvedPath);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   writeFileSync(resolvedPath, JSON.stringify(config, null, 2), 'utf-8');

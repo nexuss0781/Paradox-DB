@@ -1,6 +1,8 @@
-// Keep in sync with shared/src/types.ts
 export interface ClientConfig {
   database_path: string;
+  project_id: string;
+  project_name: string;
+  database_id: string;
   encryption: {
     cipher: string;
     kdf_iterations: number;
@@ -24,14 +26,12 @@ export interface ClientConfig {
   };
 }
 
-// Keep in sync with shared/src/types.ts
 export interface QueryResult {
   rows: any[];
   changes: number;
   lastInsertRowid: number;
 }
 
-// Keep in sync with shared/src/types.ts
 export interface SelectOptions {
   limit?: number;
   offset?: number;

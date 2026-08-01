@@ -6,8 +6,17 @@ from pathlib import Path
 from parad.types import Config
 
 
-CONFIG_DIR = Path.home() / ".paradox"
+CONFIG_DIR = Path(os.environ.get("PARADOX_HOME", "~/.paradox")).expanduser()
 CONFIG_FILE = CONFIG_DIR / "config.json"
+
+
+def config_dir() -> Path:
+    """Return the current config directory.
+
+    Read at call time (not import time) so modules that bind it by value
+    still honour a runtime ``PARADOX_HOME`` change (tests, containers).
+    """
+    return Path(os.environ.get("PARADOX_HOME", "~/.paradox")).expanduser()
 
 DEFAULT_CONFIG = {
     "database_path": "~/.paradox/data.db",

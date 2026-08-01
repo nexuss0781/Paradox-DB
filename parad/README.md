@@ -1,6 +1,8 @@
 # parad
 
-Encrypted local-first SQLite with Telegram cloud sync.
+Encrypted local-first SQLite with Telegram cloud sync — a git-like, zero-cost
+workflow database. Telegram is the disk: every change you commit becomes a
+version-stored snapshot you can revert to anytime.
 
 ## Install
 
@@ -9,6 +11,42 @@ pip install parad
 ```
 
 ## Quick Start
+
+### Python SDK (developer workflow — auto-sync on by default)
+
+Connect with a postgres-like connection string, write SQL offline, and the
+sync daemon version-stores your changes automatically. No manual push needed.
+
+```python
+from parad import connect
+
+# Auto-login (email:password), auto-provision project + database on the
+# gateway, open/create the local encrypted SQLite file.
+db = connect(url="parad://alice@example.com:secretpw@local/myproj/mydb?passphrase=secret")
+
+# Build SQL offline like any SQLite database ...
+db.execute("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT)")
+db.execute("INSERT INTO users (name) VALUES (?)", ("alice",))
+db.commit()
+
+# ... and it's already pushed to the cloud as a new snapshot version (~2s).
+# Revert anytime (from the CLI):
+# !parad rollback 1
+
+db.close()
+```
+
+Offline? Keep writing — changes are flagged `dirty` and batch-pushed as new
+versions the moment you reconnect. On conflicts your local data always wins
+(never silently dropped).
+
+Local-only is just as easy:
+
+```python
+db = connect("mydb", passphrase="secret", auto_sync=False)
+```
+
+### CLI
 
 ```bash
 # Create an encrypted database

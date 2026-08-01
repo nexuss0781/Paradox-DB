@@ -23,6 +23,29 @@ class GatewayError(Exception):
         super().__init__(f"HTTP {status_code}: {detail}")
 
 
+def is_connectivity_error(exc: Exception) -> bool:
+    """Return True when *exc* indicates a network/server problem.
+
+    Used by the sync daemon / watcher to decide whether to flip the
+    offline flag.  Client-side HTTP errors (4xx, including the 409
+    conflict) are *not* connectivity failures.
+    """
+    if isinstance(exc, GatewayError):
+        return exc.status_code >= 500
+    return isinstance(
+        exc,
+        (
+            httpx.ConnectError,
+            httpx.ConnectTimeout,
+            httpx.ReadTimeout,
+            httpx.WriteTimeout,
+            httpx.PoolTimeout,
+            httpx.TimeoutException,
+            httpx.TransportError,
+        ),
+    )
+
+
 class GatewayClient:
     """Client for the Paradox-DB Gateway REST API."""
 
@@ -158,6 +181,16 @@ class GatewayClient:
         self._check(resp)
         return resp.json() if resp.text else {}
 
+    def ensure_project(self, name: str, description: str = "") -> dict:
+        """Find a project by name or create it (idempotent provisioning).
+
+        Returns the project dict ``{"id", "name", ...}``.
+        """
+        for p in self.list_projects():
+            if p.get("name") == name:
+                return p
+        return self.create_project(name, description)
+
     # ── Databases ────────────────────────────────────────────────
 
     def list_databases(self, project_id: str) -> list[dict]:
@@ -197,6 +230,16 @@ class GatewayClient:
         )
         self._check(resp)
         return resp.json()
+
+    def ensure_database(self, project_id: str, name: str, description: str = "") -> dict:
+        """Find a database by name inside *project_id* or create it.
+
+        Returns the database dict ``{"id", "name", "project_id", ...}``.
+        """
+        for db in self.list_databases(project_id):
+            if db.get("name") == name:
+                return db
+        return self.create_database(project_id, name, description)
 
     def delete_database(self, database_id: str) -> dict:
         """Delete a database and all its versions."""
@@ -279,20 +322,33 @@ class GatewayClient:
 
     def upload(
         self,
-        database_name: str,
-        file_bytes: bytes,
+        database_name: str = "",
+        file_bytes: bytes | None = None,
         version: int = 0,
         version_type: str = "full",
         encryption_key: str = "",
+        database_id: str = "",
+        project_id: str = "",
     ) -> UploadResponse:
-        """Upload a database file to the gateway."""
+        """Upload a database file to the gateway.
+
+        Identify the target by ``database_id`` (+ optional ``project_id``)
+        or fall back to the legacy ``database_name``.
+        """
+        if file_bytes is None:
+            raise ValueError("file_bytes is required")
         file_b64 = base64.b64encode(file_bytes).decode()
         payload = {
-            "database_name": database_name,
             "file_data": file_b64,
             "version_type": version_type,
             "version": version,
         }
+        if database_name:
+            payload["database_name"] = database_name
+        if database_id:
+            payload["database_id"] = database_id
+        if project_id:
+            payload["project_id"] = project_id
         if encryption_key:
             payload["encryption_key"] = encryption_key
         resp = httpx.post(
@@ -305,9 +361,19 @@ class GatewayClient:
         self._check(resp)
         return UploadResponse(**resp.json())
 
-    def download(self, database_name: str, version: int | None = None, encryption_key: str = "") -> DownloadResult:
-        """Download a database file from the gateway."""
-        params: dict = {"database_name": database_name}
+    def download(self, database_name: str = "", version: int | None = None, encryption_key: str = "", database_id: str = "", project_id: str = "") -> DownloadResult:
+        """Download a database file from the gateway.
+
+        Prefer ``database_id`` when available; fall back to legacy
+        ``database_name``.
+        """
+        params: dict = {}
+        if database_id:
+            params["database_id"] = database_id
+        elif database_name:
+            params["database_name"] = database_name
+        if project_id:
+            params["project_id"] = project_id
         if version is not None:
             params["version"] = version
         if encryption_key:
