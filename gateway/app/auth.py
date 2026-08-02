@@ -1,11 +1,13 @@
-"""Authentication utilities — JWT + bcrypt password hashing."""
+"""Authentication utilities — JWT + bcrypt password hashing + API keys."""
 
+import hashlib
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import bcrypt
 import jwt
-from fastapi import Depends, HTTPException, Request, Security
+from fastapi import Depends, Header, HTTPException, Request, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,6 +24,14 @@ def hash_password(password: str) -> str:
 
 def verify_password(plain: str, hashed: str) -> bool:
     return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
+
+
+def generate_api_key() -> str:
+    return f"pk_{secrets.token_urlsafe(32)}"
+
+
+def hash_api_key(key: str) -> str:
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
 def create_jwt(user_id: str, expires_hours: int = 24) -> str:
@@ -45,25 +55,32 @@ def decode_jwt(token: str) -> dict:
 async def get_current_user(
     request: Request,
     bearer: Optional[HTTPAuthorizationCredentials] = Security(bearer_scheme),
+    api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
     db: AsyncSession = Depends(get_db),
 ):
-    """Extract user from Bearer JWT token."""
+    """Extract user from a Bearer JWT token or an X-API-Key header."""
     from .models import User
 
-    if not bearer:
+    if not bearer and not api_key:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
-    payload = decode_jwt(bearer.credentials)
-    user_id = payload.get("sub")
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Invalid token payload")
+    if bearer:
+        payload = decode_jwt(bearer.credentials)
+        user_id = payload.get("sub")
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Invalid token payload")
+        result = await db.execute(select(User).where(User.id == user_id))
+        user = result.scalar_one_or_none()
+        if not user or not user.is_active:
+            raise HTTPException(status_code=401, detail="User not found or inactive")
+        request.state.user_id = str(user_id)
+        return user
 
-    result = await db.execute(select(User).where(User.id == user_id))
+    result = await db.execute(select(User).where(User.api_key_hash == hash_api_key(api_key)))
     user = result.scalar_one_or_none()
     if not user or not user.is_active:
-        raise HTTPException(status_code=401, detail="User not found or inactive")
-
-    request.state.user_id = user_id
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    request.state.user_id = str(user.id)
     return user
 
 

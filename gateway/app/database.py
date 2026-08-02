@@ -1,6 +1,7 @@
 from collections.abc import AsyncGenerator
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -63,6 +64,12 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.execute(
+            text("ALTER TABLE users ADD COLUMN IF NOT EXISTS api_key_hash VARCHAR(64)")
+        )
+        await conn.execute(
+            text("CREATE UNIQUE INDEX IF NOT EXISTS ux_users_api_key_hash ON users (api_key_hash)")
+        )
 
 
 async def close_db() -> None:
