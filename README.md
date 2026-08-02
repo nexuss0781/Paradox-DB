@@ -437,7 +437,7 @@ uvicorn app.main:app --reload --port 8000
 | `TELEGRAM_BOT_TOKEN` | Yes | Bot token from @BotFather |
 | `TELEGRAM_STORAGE_CHAT_ID` | Yes | Channel for file storage |
 | `TELEGRAM_LOG_CHAT_ID` | No | Channel for log messages |
-| `JWT_SECRET` | Yes | Random string for JWT signing |
+| `API_KEY_SALT` | No | Salt for hashing cloud API keys |
 
 ### API Endpoints
 
@@ -501,7 +501,7 @@ All parad behavior is configurable via environment variables. These override any
 
 ```bash
 # Authentication (for CI/cloud — no interactive prompts)
-PARADOX_API_KEY="eyJ..."          # API token from parad auth login
+PARADOX_API_KEY="pk_..."          # cloud API key from parad auth register/login
 
 # Encryption
 PARADOX_PASSPHRASE="secret"       # default encryption passphrase
@@ -699,7 +699,7 @@ db.close()
 
 - **AES-256-CBC encryption** at rest with 256k PBKDF2 iterations
 - **Encryption key never transmitted** — stays on your machine
-- **JWT + API key auth** for gateway access
+- **API-key-only auth** for gateway access — `X-API-Key` header, no JWT
 - **Redis distributed locks** prevent concurrent upload corruption
 - **Parameterized queries** — SQL injection impossible
 - **TLS 1.2+** for all transit
@@ -740,7 +740,7 @@ Paradox-DB/
 ├── gateway/                        # FastAPI gateway (Render-deployed)
 │   ├── app/
 │   │   ├── main.py                 # FastAPI app, v2.0.0
-│   │   ├── auth.py                 # JWT + bcrypt
+│   │   ├── auth.py                 # API-key issue/hash + get_current_user (no JWT)
 │   │   ├── models.py               # SQLAlchemy models
 │   │   ├── config.py               # Pydantic settings
 │   │   └── routers/

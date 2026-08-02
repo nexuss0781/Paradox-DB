@@ -54,14 +54,14 @@ Credentials can come from three places, in priority order (all read in
    - **email:password** — `email:password@` userinfo (auto-login flow);
 3. `config.sync.api_key` (persisted from a previous login).
 
-### Bearer token
+### API key
 
 ```text
 parad://TOKEN@local/todos
 parad://local/todos?token=TOKEN
 ```
 
-The token is sent as `Authorization: Bearer <token>` on every gateway request.
+The key is sent as `X-API-Key: pk_...` on every gateway request.
 
 ### Email + password (auto-login)
 
@@ -70,7 +70,7 @@ parad://me@example.com:secret@local/todos
 ```
 
 When userinfo contains an `@` (i.e. it looks like an email) or a password,
-`connect` calls `POST /auth/login`, uses the returned `access_token`, and
+`connect` calls `POST /auth/login`, uses the returned `api_key`, and
 persists it into `config.json` so the next `connect` works without the
 credentials. A gateway is required for this flow.
 
