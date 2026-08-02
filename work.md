@@ -86,6 +86,37 @@ Tests (all in `client/tests/`, all green):
 (= `npx vitest run`) **57/57 pass**; `node dist/cli.js --help` works;
 `package.json` has `"bin": { "parad": "dist/cli.js" }`.
 
+## DONE (TS SDK 2.0.0 — swap better-sqlite3 → sql.js WASM, 2026-08-02)
+- **Why:** `better-sqlite3` is a native module — its `node-gyp` build hangs
+  `npm install` for end users; `node:sqlite` (Node built-in) was tried and
+  rejected: requires Node >= 22 (most users on 18) and vitest 2.0.5 / vite
+  5.4.21 cannot load it (`Failed to load url sqlite`). `sql.js` = real SQLite
+  compiled to WASM → full SQL, byte-compatible files, Node >= 18, zero native
+  deps, no build step, vitest bundles it.
+- `client/src/engine.ts` rewritten: `open()` is now **async** (module-level
+  `initSqlJs()` once, `new SQL.Database(bytes)`); DB lives **in WASM memory** —
+  no temp file; `close()` = `db.export()` → `encryptFile` → write `dbPath`;
+  `changes` = `getRowsModified()`; `lastInsertRowid` = `SELECT
+  last_insert_rowid()` after INSERT; SELECT/PRAGMA/EXPLAIN via
+  prepare/step/getAsObject; transactions via `db.run('BEGIN'/'COMMIT'/'ROLLBACK')`.
+  `get`/`insertMany`/`upsert` helpers preserved. **Same encrypted on-disk
+  format — v1.x files open unchanged, no migration.**
+- `client/src/connection.ts`: `ParadConnection` constructor no longer opens the
+  engine synchronously — added `async init()` (awaits `engine.open(true)`, then
+  starts the sync daemon / fire-and-forget `pullOnStartup`); `connect()` now
+  `await`s `init()` before returning. `SyncDaemon.pull`, `pull`, `pullVersion`
+  `await` the re-open after writing new bytes.
+- `client/package.json`: version **2.0.0**, `dependencies: { "sql.js": "^1.14.1" }`,
+  `engines: { "node": ">=18" }`; removed `@types/better-sqlite3`; added
+  `@types/sql.js`.
+- `vitest.config.ts`: removed the `server.deps.external` node:sqlite shim.
+- Docs updated to sql.js/Node >= 18: `client/README.md`, `docs/API.md`
+  (`await engine.open(true)` example, async `open` row), `docs/ENCRYPTION.md`
+  (in-memory lifecycle), `docs/ERRORS.md`, `docs/setup.md`, `docs/troubleshooting.md`
+  (replaced "better-sqlite3 fails to install" with a WASM-loading note), and the
+  skill gotcha in all 3 SKILL copies.
+- **VERIFIED:** `npx tsc --noEmit` clean; `npx tsc` build OK; vitest **57/57**.
+
 ## NEXT (in order — resume here)
 1. **KNOWN GAP — TS config path ignores PARADOX_HOME** (`client/src/config.ts`):
    ~~`loadConfig`/`saveConfig`/`getDefaultConfigPath` use module-level `DEFAULT_CONFIG_PATH`~~ 
@@ -122,8 +153,9 @@ Tests (all in `client/tests/`, all green):
   `_cfg.config_dir()`), NOT `from parad.config import CONFIG_DIR`.
 - SyncDaemon offline→recovery: `_onSuccess` clears `offline` BEFORE logging
   "Sync back online" — wait_for must include the log condition.
-- `better-sqlite3` is a native module; no SQLCipher. In Node, disable
-  `autoPadding` for byte-compat with Python's explicit PKCS7.
+- `sql.js` (SQLite WASM) — no native module, no build step. `open()` is async;
+  DB is in memory until `close()` persists (encrypt `export()` to `dbPath`).
+  In Node, crypto disables `autoPadding` for byte-compat with Python's explicit PKCS7.
 - `client/package.json` `type: module`; all imports use `.js` suffixes.
 - Live gateway `https://paradox-db.onrender.com/v1`; mock-gateway tests use
   `http://127.0.0.1:<port>/v1` and strip the `/v1` prefix in the router.

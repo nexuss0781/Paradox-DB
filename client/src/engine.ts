@@ -1,15 +1,23 @@
-import Database from 'better-sqlite3';
+import initSqlJs, { type Database, type SqlJsStatic } from 'sql.js';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { decryptFile, encryptFile, DecryptionError } from './crypto.js';
 import { DatabaseNotOpenError, SQLiteError } from './errors.js';
 
+let sqlPromise: Promise<SqlJsStatic> | null = null;
+
+async function getSql(): Promise<SqlJsStatic> {
+  if (!sqlPromise) {
+    sqlPromise = initSqlJs();
+  }
+  return sqlPromise;
+}
+
 export class ClientEngine {
-  private db: Database.Database | null = null;
+  private db: Database | null = null;
   private _passphrase: string;
   dbPath: string;
-  private tmpPath: string | null = null;
   private _opCount = 0;
 
   constructor(dbPath: string, passphrase: string) {
@@ -17,69 +25,32 @@ export class ClientEngine {
     this._passphrase = passphrase;
   }
 
-  private cleanupTmp(): void {
-    if (this.tmpPath) {
-      try {
-        fs.unlinkSync(this.tmpPath);
-      } catch {
-        // already gone
-      }
-      this.tmpPath = null;
-    }
-  }
-
-  private decryptToTemp(): string {
-    if (!fs.existsSync(this.dbPath)) {
-      throw new Error(`Database not found: ${this.dbPath}`);
-    }
-    const encrypted = fs.readFileSync(this.dbPath);
-    let decrypted: Buffer;
-    try {
-      decrypted = decryptFile(encrypted, this._passphrase);
-    } catch (err) {
-      if (err instanceof DecryptionError) {
-        throw new DecryptionError(`Cannot open ${this.dbPath}: ${err.message}`);
-      }
-      throw err;
-    }
-    const tmp = path.join(
-      os.tmpdir(),
-      `parad-tmp-${process.pid}-${Math.random().toString(36).slice(2)}.db`,
-    );
-    fs.writeFileSync(tmp, decrypted);
-    this.tmpPath = tmp;
-    return tmp;
-  }
-
-  private encryptFromTemp(): void {
-    if (!this.tmpPath) return;
-    const decrypted = fs.readFileSync(this.tmpPath);
-    const encrypted = encryptFile(decrypted, this._passphrase);
-    fs.mkdirSync(path.dirname(this.dbPath), { recursive: true });
-    fs.writeFileSync(this.dbPath, encrypted);
-  }
-
-  open(create = false): void {
+  async open(create = false): Promise<void> {
     if (this.db) return;
-    this.cleanupTmp();
+    const SQL = await getSql();
     try {
-      let target: string;
+      let bytes: Uint8Array | null = null;
       if (create && (!fs.existsSync(this.dbPath) || fs.statSync(this.dbPath).size === 0)) {
-        fs.mkdirSync(path.dirname(this.dbPath), { recursive: true });
-        const tmp = path.join(
-          os.tmpdir(),
-          `parad-tmp-${process.pid}-${Math.random().toString(36).slice(2)}.db`,
-        );
-        fs.writeFileSync(tmp, Buffer.alloc(0));
-        this.tmpPath = tmp;
-        target = tmp;
+        bytes = null;
       } else {
-        target = this.decryptToTemp();
+        if (!fs.existsSync(this.dbPath)) {
+          throw new Error(`Database not found: ${this.dbPath}`);
+        }
+        const encrypted = fs.readFileSync(this.dbPath);
+        let decrypted: Buffer;
+        try {
+          decrypted = decryptFile(encrypted, this._passphrase);
+        } catch (err) {
+          if (err instanceof DecryptionError) {
+            throw new DecryptionError(`Cannot open ${this.dbPath}: ${err.message}`);
+          }
+          throw err;
+        }
+        bytes = new Uint8Array(decrypted);
       }
-      this.db = new Database(target);
+      this.db = bytes ? new SQL.Database(bytes) : new SQL.Database();
     } catch (err) {
       this.db = null;
-      this.cleanupTmp();
       if (err instanceof DecryptionError) throw err;
       throw new SQLiteError(err instanceof Error ? err.message : String(err), err as Error);
     }
@@ -87,10 +58,11 @@ export class ClientEngine {
 
   close(): void {
     if (this.db) {
+      let bytes: Buffer;
       try {
-        this.db.pragma('wal_checkpoint(FULL)');
+        bytes = Buffer.from(this.db.export());
       } catch {
-        // non-fatal
+        bytes = Buffer.alloc(0);
       }
       try {
         this.db.close();
@@ -98,30 +70,48 @@ export class ClientEngine {
         // already closed
       }
       this.db = null;
+      if (bytes.length > 0) this.writeEncrypted(bytes);
     }
-    if (this.tmpPath) {
-      this.encryptFromTemp();
-      this.cleanupTmp();
+  }
+
+  private writeEncrypted(bytes: Buffer): void {
+    const encrypted = encryptFile(bytes, this._passphrase);
+    fs.mkdirSync(path.dirname(this.dbPath), { recursive: true });
+    fs.writeFileSync(this.dbPath, encrypted);
+  }
+
+  private queryAll(sql: string, params?: any[]): any[] {
+    const stmt = this.db!.prepare(sql);
+    try {
+      if (params && params.length > 0) stmt.bind(params);
+      const rows: any[] = [];
+      while (stmt.step()) {
+        rows.push(stmt.getAsObject());
+      }
+      return rows;
+    } finally {
+      stmt.free();
     }
   }
 
   execute(sql: string, params?: any[]): { rows: any[]; changes: number; lastInsertRowid: number } {
     if (!this.db) throw new DatabaseNotOpenError();
     try {
-      const stmt = this.db.prepare(sql);
       const trimmed = sql.trim().toUpperCase();
       if (trimmed.startsWith('SELECT') || trimmed.startsWith('PRAGMA') || trimmed.startsWith('EXPLAIN')) {
-        const rows = params && params.length > 0 ? stmt.all(...params) : stmt.all();
+        const rows = this.queryAll(sql, params);
         this._opCount++;
         return { rows, changes: 0, lastInsertRowid: 0 };
       }
-      const result = params && params.length > 0 ? stmt.run(...params) : stmt.run();
+      this.db.run(sql, params ?? []);
+      const changes = this.db.getRowsModified();
+      let lastInsertRowid = 0;
+      if (trimmed.startsWith('INSERT')) {
+        const res = this.queryAll('SELECT last_insert_rowid() AS id');
+        lastInsertRowid = Number(res[0]?.id ?? 0);
+      }
       this._opCount++;
-      return {
-        rows: [],
-        changes: result.changes,
-        lastInsertRowid: Number(result.lastInsertRowid),
-      };
+      return { rows: [], changes, lastInsertRowid };
     } catch (err) {
       throw new SQLiteError(err instanceof Error ? err.message : String(err), err as Error);
     }
@@ -181,8 +171,19 @@ export class ClientEngine {
   insertMany(table: string, rows: Record<string, any>[]): number[] {
     if (!this.db) throw new DatabaseNotOpenError();
     if (rows.length === 0) return [];
-    const insertAll = this.db.transaction((all: Record<string, any>[]) => all.map((row) => this.insert(table, row)));
-    return insertAll(rows);
+    this.execute('BEGIN');
+    try {
+      const ids = rows.map((row) => this.insert(table, row));
+      this.execute('COMMIT');
+      return ids;
+    } catch (err) {
+      try {
+        this.execute('ROLLBACK');
+      } catch {
+        // transaction already aborted
+      }
+      throw err;
+    }
   }
 
   /**
@@ -208,8 +209,8 @@ export class ClientEngine {
 
   /** Return the current PLAINTEXT SQLite bytes (not encrypted). */
   getRawBytes(): Buffer {
-    if (this.tmpPath) {
-      return fs.readFileSync(this.tmpPath);
+    if (this.db) {
+      return Buffer.from(this.db.export());
     }
     if (fs.existsSync(this.dbPath)) {
       const encrypted = fs.readFileSync(this.dbPath);

@@ -140,7 +140,7 @@ Use `isConnectivityError(err)` to distinguish offline from deterministic errors.
 
 - **Always `await db.close()`** before the process exits — the encrypted file on
   disk is only rewritten on close.
-- `commit()`/`rollback()` are **no-ops** (better-sqlite3 autocommits). For
+- `commit()`/`rollback()` are **no-ops** (each statement autocommits). For
   transactions: `db.execute('BEGIN') … db.execute('COMMIT')`.
 - `select(table, where)` interpolates object **keys as column names** — never
   pass untrusted identifiers there; values are always parameterized.

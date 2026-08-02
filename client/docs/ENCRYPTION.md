@@ -1,9 +1,8 @@
 # Encryption
 
 Every `parad` database file is a single **AES-256-CBC** ciphertext blob. The
-plaintext SQLite database only ever exists decrypted in a process-private temp
-file under the OS temp directory — it is never written back to your data
-directory in plaintext.
+plaintext SQLite database only ever exists decrypted in process memory (an
+in-memory `sql.js` database) — it is never written to disk in plaintext.
 
 The scheme is **byte-compatible with the Python `parad` SDK**, so a database
 created by either SDK can be opened by the other.
@@ -78,15 +77,16 @@ with the SQLite header.
 
 `ClientEngine` wraps this end-to-end:
 
-1. `open()` — read `dbPath`, `decryptFile`, write plaintext to a unique temp
-   file (`parad-tmp-<pid>-<rand>.db`), open it with `better-sqlite3`.
-2. All SQL runs against the temp file.
-3. `close()` — `wal_checkpoint(FULL)`, `encryptFile` the temp, write the
-   ciphertext back to `dbPath`, delete the temp.
+1. `open()` — read `dbPath`, `decryptFile`, load the plaintext bytes into an
+   in-memory **`sql.js`** database (`SQLite compiled to WASM`).
+2. All SQL runs against the in-memory database; nothing is ever written to disk
+   in plaintext.
+3. `close()` — `db.export()` the bytes, `encryptFile`, write the ciphertext
+   back to `dbPath`.
 
-This means a crash before `close()` loses only un-encrypted changes (the temp is
-in the OS temp dir), never corrupts the on-disk ciphertext, and the encrypted
-file on disk is always a complete, valid database snapshot.
+This means a crash before `close()` loses only un-encrypted changes (they were
+only in memory), never corrupts the on-disk ciphertext, and the encrypted file
+on disk is always a complete, valid database snapshot.
 
 ## Security notes
 

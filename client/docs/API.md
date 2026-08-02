@@ -1,8 +1,8 @@
 # API Reference
 
 All symbols are exported from the package root (`import { … } from 'parad'`).
-Every module builds on Node's built-in `fetch`, `crypto`, and `fs`, so there are
-no runtime surprises beyond the single native dependency `better-sqlite3`.
+SQL runs on **SQLite via `sql.js`** (SQLite compiled to WASM), so the package has
+**no native dependencies** and works on Node >= 18.
 
 ## Exports
 
@@ -159,7 +159,7 @@ Useful for time-travel, restore-from-backup, or auditing.
 close(): void
 ```
 Stops the sync daemon and closes the engine. The engine re-encrypts the
-decrypted temp database and writes it back to `dbPath` — call this before your
+in-memory database and writes it back to `dbPath` — call this before your
 process exits so local changes are persisted to disk.
 
 #### `commit()` / `rollback()`
@@ -167,9 +167,8 @@ process exits so local changes are persisted to disk.
 commit(): void
 rollback(): void
 ```
-No-ops (API parity with the Python SDK). `better-sqlite3` auto-commits each
-statement. Use SQL transactions explicitly if needed:
-`execute('BEGIN') … execute('COMMIT')`.
+No-ops (API parity with the Python SDK). Each statement auto-commits. Use SQL
+transactions explicitly if needed: `execute('BEGIN') … execute('COMMIT')`.
 
 ---
 
@@ -212,15 +211,15 @@ db.daemon?.isRunning;               // boolean
 
 Low-level encrypted SQLite engine. Owns the encryption/decryption lifecycle:
 
-1. `open()` decrypts `dbPath` into a private temp file (or creates a fresh
-   empty database when `create` is set);
-2. all SQL operates on the temp file;
-3. `close()` runs `wal_checkpoint(FULL)`, re-encrypts, and writes the ciphertext
-   back to `dbPath`.
+1. `open()` (async) decrypts `dbPath` into an in-memory `sql.js` database (or
+   creates a fresh empty database when `create` is set);
+2. all SQL operates on the in-memory database;
+3. `close()` exports the bytes, re-encrypts, and writes the ciphertext back to
+   `dbPath`.
 
 ```ts
 const engine = new ClientEngine('/path/to/app.db', 'passphrase');
-engine.open(true);                       // create if missing
+await engine.open(true);                 // create if missing
 engine.execute('CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)');
 engine.insert('t', { v: 'hello' });
 const rows = engine.select('t', { v: 'hello' });
@@ -229,8 +228,8 @@ engine.close();                          // encrypt + write to disk
 
 | Member | Description |
 | --- | --- |
-| `open(create = false)` | Open the database. `create` makes a new empty DB when the file is missing/empty. |
-| `close()` | Checkpoint, encrypt the temp DB, write to `dbPath`, clean temp. |
+| `open(create = false)` | **Async.** Open the database. `create` makes a new empty DB when the file is missing/empty. |
+| `close()` | Export, encrypt the in-memory DB, write to `dbPath`. |
 | `isOpen` | Whether a SQLite handle is open. |
 | `execute(sql, params?)` | Raw SQL → `{ rows, changes, lastInsertRowid }`. |
 | `insert(table, row)` | Insert an object → `lastInsertRowid`. |

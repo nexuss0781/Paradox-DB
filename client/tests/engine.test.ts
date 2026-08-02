@@ -17,10 +17,10 @@ afterEach(() => {
 });
 
 describe('ClientEngine', () => {
-  it('creates a fresh encrypted DB when create=true and file is missing', () => {
+  it('creates a fresh encrypted DB when create=true and file is missing', async () => {
     const p = path.join(tmpDir, 'fresh.db');
     const eng = new ClientEngine(p, 'secret');
-    eng.open(true);
+    await eng.open(true);
     eng.execute('CREATE TABLE t (v TEXT)');
     eng.execute('INSERT INTO t VALUES (?)', ['hello']);
     eng.close();
@@ -33,65 +33,65 @@ describe('ClientEngine', () => {
     expect(plain.toString('utf-8', 0, 16)).toBe('SQLite format 3\u0000');
   });
 
-  it('round-trips a created DB: reopen and read data', () => {
+  it('round-trips a created DB: reopen and read data', async () => {
     const p = path.join(tmpDir, 'roundtrip.db');
     let eng = new ClientEngine(p, 'secret');
-    eng.open(true);
+    await eng.open(true);
     eng.execute('CREATE TABLE t (v TEXT)');
     eng.execute('INSERT INTO t VALUES (?)', ['persisted']);
     eng.close();
 
     eng = new ClientEngine(p, 'secret');
-    eng.open();
+    await eng.open();
     const rows = eng.execute('SELECT v FROM t').rows;
     expect(rows).toEqual([{ v: 'persisted' }]);
     eng.close();
   });
 
-  it('treats an empty file as a fresh DB when create=true', () => {
+  it('treats an empty file as a fresh DB when create=true', async () => {
     const p = path.join(tmpDir, 'empty.db');
     fs.writeFileSync(p, Buffer.alloc(0));
     const eng = new ClientEngine(p, 'secret');
-    eng.open(true);
+    await eng.open(true);
     eng.execute('CREATE TABLE t (v TEXT)');
     eng.close();
     const plain = decryptFile(fs.readFileSync(p), 'secret');
     expect(plain.toString('utf-8', 0, 16)).toBe('SQLite format 3\u0000');
   });
 
-  it('rejects a wrong passphrase with DecryptionError and leaves no temp', () => {
+  it('rejects a wrong passphrase with DecryptionError and leaves no temp', async () => {
     const p = path.join(tmpDir, 'pass.db');
     let eng = new ClientEngine(p, 'secret');
-    eng.open(true);
+    await eng.open(true);
     eng.execute('CREATE TABLE t (v TEXT)');
     eng.close();
 
     eng = new ClientEngine(p, 'wrong');
-    expect(() => eng.open()).toThrow(DecryptionError);
+    await expect(eng.open()).rejects.toThrow(DecryptionError);
     expect(eng.isOpen).toBe(false);
   });
 
-  it('rejects a corrupt (non-SQLite) encrypted file with DecryptionError', () => {
+  it('rejects a corrupt (non-SQLite) encrypted file with DecryptionError', async () => {
     const p = path.join(tmpDir, 'corrupt.db');
     fs.writeFileSync(p, encryptFile(Buffer.from('not sqlite at all!!'), 'secret'));
     const eng = new ClientEngine(p, 'secret');
-    expect(() => eng.open()).toThrow(DecryptionError);
+    await expect(eng.open()).rejects.toThrow(DecryptionError);
   });
 
-  it('close is idempotent', () => {
+  it('close is idempotent', async () => {
     const p = path.join(tmpDir, 'idem.db');
     const eng = new ClientEngine(p, 'secret');
-    eng.open(true);
+    await eng.open(true);
     eng.execute('CREATE TABLE t (v TEXT)');
     eng.close();
     eng.close();
     expect(eng.isOpen).toBe(false);
   });
 
-  it('getRawBytes returns plaintext sqlite while open and closed', () => {
+  it('getRawBytes returns plaintext sqlite while open and closed', async () => {
     const p = path.join(tmpDir, 'raw.db');
     const eng = new ClientEngine(p, 'secret');
-    eng.open(true);
+    await eng.open(true);
     eng.execute('CREATE TABLE t (v TEXT)');
     const openBytes = eng.getRawBytes();
     expect(openBytes.toString('utf-8', 0, 16)).toBe('SQLite format 3\u0000');
@@ -101,10 +101,10 @@ describe('ClientEngine', () => {
     expect(closedBytes).toEqual(openBytes);
   });
 
-  it('insert/select/update/delete work', () => {
+  it('insert/select/update/delete work', async () => {
     const p = path.join(tmpDir, 'crud.db');
     const eng = new ClientEngine(p, 'secret');
-    eng.open(true);
+    await eng.open(true);
     eng.execute('CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)');
     const id = eng.insert('t', { name: 'alice' });
     expect(id).toBe(1);
@@ -118,10 +118,10 @@ describe('ClientEngine', () => {
     eng.close();
   });
 
-  it('get / insertMany / upsert helpers work', () => {
+  it('get / insertMany / upsert helpers work', async () => {
     const p = path.join(tmpDir, 'helpers.db');
     const eng = new ClientEngine(p, 'secret');
-    eng.open(true);
+    await eng.open(true);
     eng.execute('CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT UNIQUE, age INTEGER)');
 
     const ids = eng.insertMany('t', [
@@ -151,19 +151,19 @@ describe('ClientEngine', () => {
     eng.close();
   });
 
-  it('insertMany with an empty array is a no-op and returns []', () => {
+  it('insertMany with an empty array is a no-op and returns []', async () => {
     const p = path.join(tmpDir, 'emptymany.db');
     const eng = new ClientEngine(p, 'secret');
-    eng.open(true);
+    await eng.open(true);
     eng.execute('CREATE TABLE t (v TEXT)');
     expect(eng.insertMany('t', [])).toEqual([]);
     eng.close();
   });
 
-  it('upsert rolls back on missing conflict column and throws', () => {
+  it('upsert rolls back on missing conflict column and throws', async () => {
     const p = path.join(tmpDir, 'badupsert.db');
     const eng = new ClientEngine(p, 'secret');
-    eng.open(true);
+    await eng.open(true);
     eng.execute('CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)');
     expect(() => eng.upsert('t', { id: 1, name: 'x' }, [])).toThrow(
       'upsert requires at least one conflict column'
