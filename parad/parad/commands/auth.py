@@ -22,11 +22,13 @@ def register(email, username, password):
     gw = GatewayClient(config.sync.gateway_url)
     try:
         result = gw.register_email(email, username, password)
-        token = result.get("access_token", "")
+        token = result.get("api_key", "")
         if token:
             set_config_value("sync.api_key", token)
         click.echo(f"✓ Registered as {result.get('username', '')} ({result.get('email', '')})")
         click.echo(f"  User ID: {result.get('user_id', '')}")
+        if token:
+            click.echo("  API key (shown once): " + token)
     except GatewayError as e:
         click.echo(f"✗ Registration failed: {e}")
         raise SystemExit(1)
@@ -41,10 +43,11 @@ def login(email, password):
     gw = GatewayClient(config.sync.gateway_url)
     try:
         result = gw.login(email, password)
-        token = result.get("access_token", "")
+        token = result.get("api_key", "")
         if token:
             set_config_value("sync.api_key", token)
         click.echo(f"✓ Logged in as {result.get('username', '')}")
+        click.echo("  API key (shown once): " + token)
     except GatewayError as e:
         click.echo(f"✗ Login failed: {e}")
         raise SystemExit(1)
@@ -75,12 +78,12 @@ def _ensure_auth(gw):
 
     try:
         result = gw.login(email, password)
-        token = result.get("access_token") or result.get("api_key")
+        token = result.get("api_key")
         if token:
             set_config_value("sync.api_key", token)
             click.echo("✓ Authentication successful")
         else:
-            raise ClickException("Login succeeded but no token received")
+            raise ClickException("Login succeeded but no API key received")
     except GatewayError as e:
         raise ClickException(f"Authentication failed: {e}")
 
@@ -103,4 +106,4 @@ def auth_status():
         click.echo(f"Logged in as: {me.get('username', 'unknown')} ({me.get('email', '')})")
         click.echo(f"User ID: {me.get('id', 'unknown')}")
     except GatewayError:
-        click.echo("Token expired or invalid. Run: parad auth login")
+        click.echo("API key invalid. Run: parad auth login")

@@ -185,8 +185,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send(
                 200,
                 {
-                    "access_token": "tok-abc",
-                    "token_type": "bearer",
+                    "api_key": "pk_abc",
                     "username": body.get("email", ""),
                     "user_id": "u1",
                 },
@@ -195,7 +194,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send(
                 200,
                 {
-                    "access_token": "tok-abc",
+                    "api_key": "pk_abc",
                     "user_id": "u1",
                     "username": body.get("username", ""),
                     "email": body.get("email", ""),
@@ -311,7 +310,7 @@ def test_connect_email_password_provisioning(paradox_home):
         conn = connect(url=url, auto_sync=False)
         cfg = _cfg.load_config()
         assert store.login_calls >= 1, "login should hit the gateway"
-        assert cfg.sync.api_key == "tok-abc", f"got {cfg.sync.api_key!r}"
+        assert cfg.sync.api_key == "pk_abc", f"got {cfg.sync.api_key!r}"
         assert store.project_by_name("myproj") is not None
         assert cfg.project_name == "myproj"
         assert cfg.project_id.startswith("p-")

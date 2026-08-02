@@ -25,8 +25,8 @@ class FakeGatewayClient:
         self.login_calls += 1
         self.login_email = email
         self.login_password = password
-        self.api_key = "tok-from-login"
-        return {"access_token": self.api_key}
+        self.api_key = "pk_from_login"
+        return {"user_id": "u1", "email": email, "username": email, "api_key": self.api_key}
 
     def ensure_project(self, name, description=""):
         return {"id": "p-" + name, "name": name}
@@ -206,7 +206,7 @@ def test_connect_email_password_triggers_login(fake_gateway):
     login_gw = FakeGatewayClient.instances[0]
     assert login_gw.login_email == "alice@example.com"
     assert login_gw.login_password == "secretpw"
-    assert captured["api_key"] == "tok-from-login"
+    assert captured["api_key"] == "pk_from_login"
 
 
 def test_connect_email_password_requires_gateway(monkeypatch):

@@ -135,11 +135,11 @@ class MockGateway {
     }
     if (method === 'POST' && p === '/auth/login') {
       s.loginCalls += 1;
-      this.send(res, 200, { access_token: 'tok-abc', token_type: 'bearer' });
+      this.send(res, 200, { user_id: 'u1', email: 'alice@example.com', username: 'alice', api_key: 'pk_test_api_key' });
       return;
     }
     if (method === 'POST' && p === '/auth/register') {
-      this.send(res, 200, { access_token: 'tok-abc', user_id: 'u1' });
+      this.send(res, 200, { user_id: 'u1', email: 'alice@example.com', username: 'alice', api_key: 'pk_test_api_key' });
       return;
     }
     if (method === 'GET' && p === '/projects') {
