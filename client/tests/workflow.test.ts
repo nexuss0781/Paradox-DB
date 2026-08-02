@@ -219,9 +219,9 @@ function sha(b: Buffer): string {
   return crypto.createHash('sha256').update(b).digest('hex');
 }
 
-function makeSqliteBytes(passphrase: string, rows: string[]): Buffer {
+async function makeSqliteBytes(passphrase: string, rows: string[]): Promise<Buffer> {
   const eng = new ClientEngine(path.join(os.tmpdir(), `mk-${Date.now()}-${Math.random().toString(36).slice(2)}.db`), passphrase);
-  eng.open(true);
+  await eng.open(true);
   eng.execute('CREATE TABLE IF NOT EXISTS t (v TEXT)');
   for (const r of rows) eng.execute('INSERT INTO t VALUES (?)', [r]);
   const blob = eng.getRawBytes();
@@ -329,12 +329,12 @@ describe('workflow T3: 409 conflict -> local-wins', () => {
     await gw.start();
     const proj = store.createProject('confproj');
     const db = store.createDatabase(proj.id, 'conflict');
-    const remoteBytes = makeSqliteBytes(PASSPHRASE, ['remote-data']);
+    const remoteBytes = await makeSqliteBytes(PASSPHRASE, ['remote-data']);
     db.versions.set(1, remoteBytes);
     db.latest = 1;
 
     const localPath = path.join(tmpHome, 'conflict_local.db');
-    const localBytes = makeSqliteBytes(PASSPHRASE, ['local-data']);
+    const localBytes = await makeSqliteBytes(PASSPHRASE, ['local-data']);
     fs.writeFileSync(localPath, encryptFile(localBytes, PASSPHRASE));
 
     const conn = await connect({

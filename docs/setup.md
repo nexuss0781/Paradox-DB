@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- **Client:** Bun >= 1.0 or Node.js >= 20 with better-sqlite3 native bindings
+- **Client:** Bun >= 1.0 or Node.js >= 18 (SQLite via `sql.js` WASM — no native bindings, no build step)
 - **Gateway:** Python 3.11+, Docker & Docker Compose
 - **Telegram:** Bot token from @BotFather, API credentials from my.telegram.org
 

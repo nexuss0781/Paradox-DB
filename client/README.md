@@ -5,8 +5,8 @@ cloud sync — the client half of the [Paradox-DB](https://github.com/nexuss0781
 platform.
 
 - **Encrypted at rest** — every database file on disk is a single AES-256-CBC
-  ciphertext blob. The SQLite database only ever exists decrypted in a
-  process-private temp file.
+  ciphertext blob. The SQLite database only ever exists decrypted in process
+  memory (an in-memory `sql.js` database).
 - **Byte-compatible with Python** — the `parad` SDK on PyPI uses the same KDF,
   salt, and padding, so databases move freely between languages.
 - **Sync by default** — connect once and local writes are pushed to the gateway
@@ -56,8 +56,8 @@ const db = await connect('parad://me@example.com:secret@local/acme/todos?passphr
 
 ## Requirements
 
-- Node.js **>= 18**
-- `better-sqlite3` (native dependency, installed automatically)
+- Node.js **>= 18** (SQLite runs on **`sql.js`** — WASM, so **no native
+  dependencies**; installs cleanly on any platform)
 
 ## Quickstart
 
@@ -88,10 +88,10 @@ const pulled = await db.pull();       // pull gateway → local
 await db.close();
 ```
 
-> **Note on `commit()` / `rollback()`:** `better-sqlite3` auto-commits each
-> statement, so these methods exist only for API parity with the Python SDK
-> and are no-ops. Use SQLite transactions via `execute('BEGIN')` /
-> `execute('COMMIT')` if you need atomicity.
+> **Note on `commit()` / `rollback()`:** each statement auto-commits, so these
+> methods exist only for API parity with the Python SDK and are no-ops. Use
+> SQLite transactions via `execute('BEGIN')` / `execute('COMMIT')` if you need
+> atomicity.
 
 ## License
 

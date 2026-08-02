@@ -277,12 +277,12 @@ export class SyncDaemon {
         // ignore
       }
       if (remoteHash === currentHash) return false;
-      // close FIRST so the stale temp cannot re-encrypt over the new file
+      // close FIRST so the current in-memory state cannot re-encrypt over the new file
       this.engine.close();
       const encrypted = encryptFile(result.bytes, this.engine.passphrase);
       fs.mkdirSync(path.dirname(this.engine.dbPath), { recursive: true });
       fs.writeFileSync(this.engine.dbPath, encrypted);
-      this.engine.open();
+      await this.engine.open();
       if (result.version !== null && result.version !== undefined) {
         syncState.setRemoteVersion(this.dbKey, result.version, remoteHash);
       }
@@ -325,6 +325,10 @@ export class ParadConnection {
   private dbName: string;
   private _dbKey: string;
   private _daemon: SyncDaemon | null = null;
+  private _autoSync = false;
+  private _pullOnStartup = false;
+  private _pushIntervalMs?: number;
+  private _pullIntervalMs?: number;
 
   constructor(opts: {
     dbPath: string;
@@ -349,23 +353,29 @@ export class ParadConnection {
     this._dbKey = dbStateKey(this.dbName, this.project);
 
     this.engine = new ClientEngine(opts.dbPath, opts.passphrase);
-    this.engine.open(true);
+    this._autoSync = opts.autoSync || false;
+    this._pullOnStartup = opts.pullOnStartup || false;
+    this._pushIntervalMs = opts.pushIntervalMs;
+    this._pullIntervalMs = opts.pullIntervalMs;
+  }
 
-    if (opts.autoSync && opts.gatewayUrl) {
+  async init(): Promise<void> {
+    await this.engine.open(true);
+    if (this._autoSync && this.gatewayUrl) {
       this._daemon = new SyncDaemon({
         engine: this.engine,
         dbName: this.dbName,
-        gatewayUrl: opts.gatewayUrl,
+        gatewayUrl: this.gatewayUrl,
         apiKey: this.apiKey,
         project: this.project,
         databaseId: this.databaseId,
         projectId: this.projectId,
-        pushIntervalMs: opts.pushIntervalMs,
-        pullIntervalMs: opts.pullIntervalMs,
+        pushIntervalMs: this._pushIntervalMs,
+        pullIntervalMs: this._pullIntervalMs,
       });
-      if (opts.pullOnStartup) {
+      if (this._pullOnStartup) {
         try {
-          this.pull();
+          await this.pull();
         } catch {
           // pull_on_startup failure is non-fatal
         }
@@ -391,11 +401,11 @@ export class ParadConnection {
   }
 
   commit(): void {
-    // better-sqlite3 autocommits each run; no-op for API parity
+    // each statement auto-commits; no-op for API parity
   }
 
   rollback(): void {
-    // better-sqlite3 has no open transaction across run() calls
+    // no open transaction persists across run() calls
   }
 
   close(): void {
@@ -467,7 +477,7 @@ export class ParadConnection {
     const encrypted = encryptFile(result.bytes, this.passphrase);
     fs.mkdirSync(path.dirname(this.engine.dbPath), { recursive: true });
     fs.writeFileSync(this.engine.dbPath, encrypted);
-    this.engine.open();
+    await this.engine.open();
     if (result.version !== null && result.version !== undefined) {
       syncState.setRemoteVersion(this.dbKey, result.version, remoteHash);
     }
@@ -486,7 +496,7 @@ export class ParadConnection {
     const encrypted = encryptFile(result.bytes, this.passphrase);
     fs.mkdirSync(path.dirname(this.engine.dbPath), { recursive: true });
     fs.writeFileSync(this.engine.dbPath, encrypted);
-    this.engine.open();
+    await this.engine.open();
     syncState.setRemoteVersion(this.dbKey, result.version ?? version, remoteHash);
     syncState.setLastLocalHash(this.dbKey, remoteHash);
     syncState.clearDirty(this.dbKey);
@@ -623,7 +633,7 @@ export async function connect(opts: ConnectOptions | string): Promise<ParadConne
     }
   }
 
-  return new ParadConnection({
+  const conn = new ParadConnection({
     dbPath: resolvedPath,
     passphrase: resolvedPassphrase,
     gatewayUrl: resolvedGateway,
@@ -636,4 +646,6 @@ export async function connect(opts: ConnectOptions | string): Promise<ParadConne
     pushIntervalMs: options.pushIntervalMs,
     pullIntervalMs: options.pullIntervalMs,
   });
+  await conn.init();
+  return conn;
 }

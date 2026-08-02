@@ -18,7 +18,7 @@ import {
 | `DecryptionError` | Opening a database: wrong passphrase, corrupt/truncated file, invalid padding, or payload that isn't a SQLite database. | Thrown by `decryptFile` and `ClientEngine.open`. |
 | `EncryptionError` | Wrong passphrase or corrupted database on the encrypt path. | Parity class with the Python SDK. |
 | `DatabaseNotOpenError` | Calling `execute` (or other SQL) while the engine is closed. | Usually means `close()` was called early. |
-| `SQLiteError` | A SQL statement failed (`better-sqlite3` error). | Carries the original error in `.originalError`. |
+| `SQLiteError` | A SQL statement failed (SQLite via `sql.js`). | Carries the original error in `.originalError`. |
 | `GatewayError` | A gateway request returned an HTTP error (>= 400) or failed to connect. | Carries `.statusCode` and `.detail`. |
 | `ConflictError` | A 409 conflict surfaced in API form. | Exposes `.remoteVersion`, `.yourVersion`, `.remoteMessageId`. The sync layer handles this internally (local-wins). |
 | `RateLimitError` | The gateway rate-limited the request. | Exposes `.retryAfterSeconds`. |

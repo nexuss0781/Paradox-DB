@@ -16,18 +16,13 @@ Call `engine.open(passphrase)` before executing queries.
 
 The file exists but isn't a valid SQLite database. Check `database_path` in config.
 
-### better-sqlite3 fails to install
+### WASM binary fails to load (sql.js)
 
-Ensure native build tools are available:
-```bash
-# Ubuntu/Debian
-sudo apt install build-essential python3
-
-# macOS
-xcode-select --install
-
-# Then rebuild
-cd client && npm rebuild better-sqlite3
+`sql.js` ships the SQLite engine as WebAssembly in
+`node_modules/sql.js/dist/sql-wasm.wasm`. If your bundler strips `.wasm` assets,
+copy it beside the bundle or call `initSqlJs({ locateFile: (f) => … })` and point
+it at the `.wasm` file. The `parad` package ships no native bindings, so there is
+never a `node-gyp`/better-sqlite3 build step.
 ```
 
 ## Gateway
