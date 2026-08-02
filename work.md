@@ -165,3 +165,28 @@ Tests (all in `client/tests/`, all green):
 - `parad/` — Python SDK (done, hardened; 36 tests green).
 - `gateway/` — FastAPI gateway v2.0.0 (unchanged; JWT-only contract).
 - `shared/` — legacy shared TS types (out of date vs. live gateway; ignore).
+
+## AUTH PHASE — API keys + enforce cloud auth (2026-08-02)
+- Gateway now supports **API-key auth** alongside JWT Bearer:
+  `generate_api_key()` (`pk_...`, SHA-256 hashed at rest via `hash_api_key`),
+  `get_current_user` accepts `Authorization: Bearer <jwt>` **or**
+  `X-API-Key: pk_...`.
+- `POST /v1/auth/register` returns `api_key` (shown once; hash stored).
+  `POST /v1/auth/api-key` mints/rotates a new key (old key invalidated).
+- `api_key_hash` column added to `users` with idempotent
+  `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` + unique index in `init_db`
+  (create_all alone won't add columns to existing tables).
+- **Enforcement**: every data endpoint requires auth (verified: all routers
+  use `Depends(get_current_user)`, ownership scoped by `user_id`). The last
+  unauthenticated hole `GET /test` is now auth-protected.
+- Public endpoints only: `/`, `/health*`, `/metrics`, `/docs`, auth
+  (register/login). Test suite rewritten (test_auth.py) to current API.
+- **Deployed + verified live on Render** (`paradox-db.onrender.com`): 18/18
+  live checks pass — register(api_key+jwt), login, me, 401 no-auth,
+  invalid-key 401, valid key/jwt 200, duplicate 409, `/test` 401 unauth,
+  projects CRUD (201), api-key rotate invalidates old, user scoping.
+- Local: Postgres down + no docker here, so DB-backed tests can't run
+  locally; unit suite (API-key hashing, JWT, rate limiter, mocked health)
+  green (23 passed).
+- Next (not done): TS SDK `PARADOX_API_KEY` env support (Python has it),
+  `parad login/register/whoami` CLI commands, web frontend.
