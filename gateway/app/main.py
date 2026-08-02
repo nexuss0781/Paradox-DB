@@ -24,7 +24,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Paradox-DB Gateway",
-    version="2.0.0",
+    version="2.0.1",
     description="Web Gateway for Telegram-synced SQLite database",
     lifespan=lifespan,
 )
@@ -82,4 +82,4 @@ app.include_router(databases.router, tags=["databases"])
 @app.get("/")
 async def root():
     await log_operation("gateway", "Gateway info requested", "info")
-    return {"service": "paradox-db-gateway", "version": "2.0.0"}
+    return {"service": "paradox-db-gateway", "version": "2.0.1"}
