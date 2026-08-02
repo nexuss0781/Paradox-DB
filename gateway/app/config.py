@@ -10,7 +10,6 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/paradox_registry"
     redis_url: str = "redis://localhost:6379/0"
-    jwt_secret: str = "change-me-in-production"
     api_key_salt: str = "change-me-in-production"
     max_upload_size_mb: int = 50
     rate_limit_uploads_per_minute: int = 15

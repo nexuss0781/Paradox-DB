@@ -59,7 +59,7 @@ interface ConnectOptions {
   dbPath?: string;
   /** Gateway base URL, e.g. https://paradox-db.onrender.com/v1 */
   gatewayUrl?: string;
-  /** Bearer token for the gateway. */
+  /** Cloud API key (`pk_...`) sent as X-API-Key. */
   apiKey?: string;
   /** Start the background sync daemon. Default: true (only when a gateway is set). */
   autoSync?: boolean;
@@ -82,7 +82,7 @@ interface ConnectOptions {
 | `apiKey` | `options.apiKey` → `url ?token=` / `token@` → **email:password auto-login** → `config.sync.api_key` |
 
 When credentials come from an `email:password` pair, `connect` calls
-`POST /auth/login`, uses the returned `access_token`, and persists it into
+`POST /auth/login`, uses the returned `api_key`, and persists it into
 `config.json` so later connections are seamless.
 
 ### Provisioning
@@ -199,7 +199,7 @@ db.daemon?.isRunning;               // boolean
 | `engine` | `ClientEngine` | — | Engine to push/pull. |
 | `dbName` | `string` | — | Database name for the gateway. |
 | `gatewayUrl` | `string` | — | Gateway base URL. |
-| `apiKey` | `string` | `''` | Bearer token. |
+| `apiKey` | `string` | `''` | Cloud API key (`pk_...`), sent as X-API-Key. |
 | `project` | `string \| null` | `null` | Project scope. |
 | `databaseId` / `projectId` | `string` | `''` | Pre-resolved remote IDs (fallback to names). |
 | `pushIntervalMs` | `number` | `2000` | Min interval between push attempts. |
@@ -257,8 +257,8 @@ const gw = new GatewayClient('https://paradox-db.onrender.com/v1', apiKey);
 
 | Method | HTTP | Description |
 | --- | --- | --- |
-| `login(email, password)` | `POST /auth/login` | Exchange credentials → `{ access_token }`. |
-| `registerEmail(email, username, password)` | `POST /auth/register` | Create an account → `{ access_token }`. |
+| `login(email, password)` | `POST /auth/login` | Exchange credentials → `{ api_key }` (rotates, old key invalidated). |
+| `registerEmail(email, username, password)` | `POST /auth/register` | Create an account → `{ api_key }` (shown once). |
 | `authMe()` | `GET /auth/me` | Current user info. |
 | `listProjects()` / `createProject(name, desc?)` | `GET/POST /projects` | Project management. |
 | `ensureProject(name, desc?)` | — | Find or create a project by name. |
