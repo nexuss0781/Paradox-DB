@@ -40,15 +40,18 @@ Return shapes (exact — don't guess):
 ```ts
 db.execute(sql, params?)    // → { rows: any[], changes: number, lastInsertRowid: number }
 db.insert(table, row)       // → number (lastInsertRowid)
+db.insertMany(table, rows)  // → number[] (rowids; one transaction, atomic)
+db.get(table, where?)       // → any | null (first matching row)
 db.select(table, where?, options?)  // → any[] (array of row objects)
 db.update(table, set, where)// → number (rows changed)
+db.upsert(table, row, conflictColumns)  // → number (1 insert or update, 0 no-op)
 db.delete(table, where)     // → number (rows deleted)
 db.push()                   // → Promise<number | null> (remote version)
 db.pull()                   // → Promise<boolean> (true if local file replaced)
 ```
 
-No `insertMany`/`upsert`/`get` (single-row) helpers exist — use `execute()` for
-anything custom (transactions/no-op caveats in Gotchas).
+`upsert` updates every non-conflict column on conflict; its `conflictColumns`
+(must match a PRIMARY KEY/UNIQUE constraint) can be a string or array.
 
 Options: `{ name, project, passphrase, url, dbPath, gatewayUrl, apiKey, autoSync,
 pullOnStartup, pushIntervalMs, pullIntervalMs }`. `pullOnStartup` hydrates the

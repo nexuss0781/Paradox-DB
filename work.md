@@ -1,6 +1,6 @@
 # Paradox-DB — SDK Hardening Status (work.md)
 
-Last updated: 2026-08-01. This file is the single source of truth so any agent
+Last updated: 2026-08-02. This file is the single source of truth so any agent
 (or the same agent in a fresh session) can resume the work exactly where it
 left off.
 
@@ -56,7 +56,13 @@ New/rewritten in `client/src/`:
    wrong passphrase → DecryptionError, idempotent `close()`, `getRawBytes()`,
    CRUD helpers. `execute()` uses prepared statements for BOTH reads and writes
    (parameterless `SELECT` now returns rows — previously `db.exec()` dropped
-   them).
+   them). **`get(table, where?) → any|null` (first row), `insertMany(table, rows)
+   → number[]` (single better-sqlite3 transaction, atomic), `upsert(table, row,
+   conflictColumns) → number` (changes: 1 insert/update, 0 no-op; conflict
+   target must match a PK/UNIQUE constraint; non-conflict columns merged via
+   `excluded.`; all-conflict row → DO NOTHING).** Note: better-sqlite3 returns a
+   STALE `lastInsertRowid` after `ON CONFLICT DO UPDATE`, so `upsert` returns
+   `.changes`, not rowid.
 8. `connection.ts` — `parseUrl`/`generateUrl`/`dbStateKey`, `connect()`
    (auth order: explicit api_key > URL token > userinfo token > email:password
    login > config api_key; auto-provisioning + persist ids). Honors
@@ -69,7 +75,7 @@ New/rewritten in `client/src/`:
 
 Tests (all in `client/tests/`, all green):
 - `crypto.test.ts` (11) — incl. Python-encrypted fixture byte-compat.
-- `engine.test.ts` (9), `state.test.ts` (8), `connection.test.ts` (18),
+- `engine.test.ts` (12), `state.test.ts` (8), `connection.test.ts` (18),
   `scaffold.test.ts` (4).
 - `workflow.test.ts` (4) — in-process `MockGateway` (async `listen`, `/v1`
   prefix strip, `GET/POST /projects/{id}/databases`): T1 email:password
@@ -77,7 +83,7 @@ Tests (all in `client/tests/`, all green):
   local-wins loser preserved; T4 manual push/pullVersion revert.
 
 **VERIFIED:** `npx tsc --noEmit` clean; `npx tsc` build OK; `npm run test`
-(= `npx vitest run`) **54/54 pass**; `node dist/cli.js --help` works;
+(= `npx vitest run`) **57/57 pass**; `node dist/cli.js --help` works;
 `package.json` has `"bin": { "parad": "dist/cli.js" }`.
 
 ## NEXT (in order — resume here)
@@ -101,7 +107,14 @@ Tests (all in `client/tests/`, all green):
 4. **Final verification** **DONE (2026-08-01)**: TS `npx tsc --noEmit` clean,
    `npx tsc` build OK, vitest **54/54**; Python pytest **58/58** (36 + 22 new);
    both CLIs `--help` exit 0.
-5. Commit is NOT to be done unless explicitly requested (git status: 44 changed/untracked).
+5. **get/insertMany/upsert helpers** **DONE (2026-08-02)**: added to
+   `client/src/engine.ts` (get→any|null, insertMany→number[] atomic,
+   upsert→changes count; upsert conflict target must match PK/UNIQUE; stale
+   lastInsertRowid on DO UPDATE → return `.changes`). 3 new engine tests,
+   suite now **57/57**. Skill updated (removed "no helpers" warning, added the
+   three shapes) and synced to all 3 copies (`SKILL/`, `.opencode/skills/`,
+   `~/.config/opencode/skills/`). Committed + pushed.
+6. Commit is NOT to be done unless explicitly requested (git status: 44 changed/untracked).
 
 ## Known gotchas / constraints
 - `importlib.reload` in Python conftest swaps module `__dict__` in place —
