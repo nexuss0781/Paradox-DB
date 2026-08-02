@@ -6,7 +6,14 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..auth import create_jwt, get_current_user, hash_password, verify_password
+from ..auth import (
+    create_jwt,
+    generate_api_key,
+    get_current_user,
+    hash_api_key,
+    hash_password,
+    verify_password,
+)
 from ..database import get_db
 from ..models import User, RegisterRequest, LoginRequest, AuthResponse, UserResponse
 
@@ -26,11 +33,13 @@ async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="Username already taken")
 
+    api_key = generate_api_key()
     user = User(
         id=uuid.uuid4(),
         email=body.email,
         username=body.username,
         password_hash=hash_password(body.password[:72]),
+        api_key_hash=hash_api_key(api_key),
     )
     db.add(user)
     await db.flush()
@@ -41,6 +50,7 @@ async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
         email=user.email,
         username=user.username,
         access_token=token,
+        api_key=api_key,
     )
 
 
@@ -60,6 +70,25 @@ async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
         email=user.email,
         username=user.username,
         access_token=token,
+    )
+
+
+@router.post("/api-key", response_model=AuthResponse)
+async def mint_api_key(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Mint a new API key for the current user (old key is invalidated)."""
+    new_key = generate_api_key()
+    user.api_key_hash = hash_api_key(new_key)
+    db.add(user)
+    await db.flush()
+    return AuthResponse(
+        user_id=str(user.id),
+        email=user.email,
+        username=user.username,
+        access_token=create_jwt(str(user.id)),
+        api_key=new_key,
     )
 
 

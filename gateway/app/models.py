@@ -29,6 +29,7 @@ class User(Base):
     email = Column(String(255), unique=True, nullable=False)
     username = Column(String(100), unique=True, nullable=False)
     password_hash = Column(String(255), nullable=False)
+    api_key_hash = Column(String(64), unique=True, nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
@@ -163,6 +164,7 @@ class AuthResponse(BaseModel):
     username: str
     access_token: str
     token_type: str = "bearer"
+    api_key: str | None = None
 
 
 class UserResponse(BaseModel):

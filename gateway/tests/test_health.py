@@ -191,16 +191,17 @@ async def test_status_stub(client: AsyncClient):
 # ---------------------------------------------------------------------------
 
 
-def test_user_channel_model_fields():
-    """3.3.1 user_channels table is properly defined"""
-    from app.models import UserChannel
+def test_user_model_fields():
+    """3.3.1 users table is properly defined"""
+    from app.models import User
 
-    assert UserChannel.__tablename__ == "user_channels"
-    cols = {c.name for c in UserChannel.__table__.columns}
-    assert "user_id" in cols
-    assert "channel_id" in cols
-    assert "bot_token_id" in cols
-    assert "created_at" in cols
+    assert User.__tablename__ == "users"
+    cols = {c.name for c in User.__table__.columns}
+    assert "email" in cols
+    assert "username" in cols
+    assert "password_hash" in cols
+    assert "api_key_hash" in cols
+    assert "is_active" in cols
 
 
 def test_database_version_model_fields():
@@ -209,12 +210,12 @@ def test_database_version_model_fields():
 
     assert DatabaseVersion.__tablename__ == "database_versions"
     cols = {c.name for c in DatabaseVersion.__table__.columns}
-    assert "user_id" in cols
-    assert "database_name" in cols
-    assert "latest_message_id" in cols
-    assert "latest_version" in cols
+    assert "db_id" in cols
+    assert "version_number" in cols
     assert "file_hash" in cols
-    assert "uploaded_at" in cols
+    assert "file_size" in cols
+    assert "message_id" in cols
+    assert "created_at" in cols
 
 
 def test_sync_log_model_fields():
@@ -234,21 +235,20 @@ def test_sync_log_model_fields():
     assert "completed_at" in cols
 
 
-def test_user_channel_primary_key():
-    """3.3.4 user_channels has user_id as PK"""
-    from app.models import UserChannel
+def test_user_primary_key():
+    """3.3.4 users has id as PK"""
+    from app.models import User
 
-    pk_cols = [c.name for c in UserChannel.__table__.primary_key.columns]
-    assert pk_cols == ["user_id"]
+    pk_cols = [c.name for c in User.__table__.primary_key.columns]
+    assert pk_cols == ["id"]
 
 
-def test_database_version_composite_pk():
-    """3.3.5 database_versions has composite PK (user_id, database_name)"""
+def test_database_version_primary_key():
+    """3.3.5 database_versions has id as PK"""
     from app.models import DatabaseVersion
 
     pk_cols = [c.name for c in DatabaseVersion.__table__.primary_key.columns]
-    assert "user_id" in pk_cols
-    assert "database_name" in pk_cols
+    assert pk_cols == ["id"]
 
 
 def test_sync_log_primary_key():
@@ -260,21 +260,21 @@ def test_sync_log_primary_key():
 
 
 def test_database_version_foreign_key():
-    """3.3.7 database_versions has FK to user_channels"""
+    """3.3.7 database_versions has FK to paradox_dbs"""
     from app.models import DatabaseVersion
 
     fks = list(DatabaseVersion.__table__.foreign_keys)
     assert len(fks) == 1
-    assert fks[0].column.table.name == "user_channels"
+    assert fks[0].column.table.name == "paradox_dbs"
 
 
 def test_sync_log_foreign_key():
-    """3.3.7b sync_log has FK to user_channels"""
+    """3.3.7b sync_log has FK to users"""
     from app.models import SyncLog
 
     fks = list(SyncLog.__table__.foreign_keys)
     assert len(fks) == 1
-    assert fks[0].column.table.name == "user_channels"
+    assert fks[0].column.table.name == "users"
 
 
 # ---------------------------------------------------------------------------
@@ -288,4 +288,4 @@ async def test_root_endpoint(client: AsyncClient):
     assert response.status_code == 200
     body = response.json()
     assert body["service"] == "paradox-db-gateway"
-    assert body["version"] == "1.0.0"
+    assert body["version"] == "2.0.0"
