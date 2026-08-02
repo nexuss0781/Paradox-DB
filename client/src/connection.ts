@@ -576,12 +576,12 @@ export async function connect(opts: ConnectOptions | string): Promise<ParadConne
     const gw = new GatewayClient(resolvedGateway);
     try {
       const result = await gw.login(email, password);
-      resolvedApiKey = result.access_token;
+      resolvedApiKey = result.api_key;
     } catch (exc) {
       throw new Error(`Login to gateway failed: ${exc instanceof Error ? exc.message : String(exc)}`);
     }
     if (!resolvedApiKey) {
-      throw new Error('Login succeeded but no token was returned');
+      throw new Error('Login succeeded but no API key was returned');
     }
     try {
       const c = loadConfig();

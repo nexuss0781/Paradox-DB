@@ -162,9 +162,7 @@ class AuthResponse(BaseModel):
     user_id: str
     email: str
     username: str
-    access_token: str
-    token_type: str = "bearer"
-    api_key: str | None = None
+    api_key: str
 
 
 class UserResponse(BaseModel):

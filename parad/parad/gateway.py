@@ -56,7 +56,6 @@ class GatewayClient:
     def _headers(self) -> dict:
         h = {"Content-Type": "application/json"}
         if self.api_key:
-            h["Authorization"] = f"Bearer {self.api_key}"
             h["X-API-Key"] = self.api_key
         return h
 
@@ -98,13 +97,13 @@ class GatewayClient:
         )
         self._check(resp)
         data = resp.json()
-        token = data.get("access_token") or data.get("api_key", "")
+        token = data.get("api_key")
         if token:
             self.api_key = token
         return data
 
     def login(self, email: str, password: str) -> dict:
-        """Login with email and password."""
+        """Login with email and password. Issues a fresh cloud API key."""
         resp = httpx.post(
             f"{self.gateway_url}/auth/login",
             json={"email": email, "password": password},
@@ -114,7 +113,7 @@ class GatewayClient:
         )
         self._check(resp)
         data = resp.json()
-        token = data.get("access_token") or data.get("api_key", "")
+        token = data.get("api_key")
         if token:
             self.api_key = token
         return data

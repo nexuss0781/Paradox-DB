@@ -1,9 +1,9 @@
 import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
+
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.auth import hash_api_key, generate_api_key, create_jwt, decode_jwt, RateLimiter
+from app.auth import hash_api_key, generate_api_key, RateLimiter
 
 
 client = TestClient(app)
@@ -31,37 +31,6 @@ def test_generate_api_key_format():
 
 def test_generate_api_key_unique():
     assert generate_api_key() != generate_api_key()
-
-
-# ── JWT (unit) ────────────────────────────────────────────────────
-
-
-def test_create_jwt_and_decode():
-    token = create_jwt("user_123")
-    payload = decode_jwt(token)
-    assert payload["sub"] == "user_123"
-    assert "iat" in payload
-    assert "exp" in payload
-
-
-def test_decode_jwt_invalid_token():
-    with pytest.raises(Exception):
-        decode_jwt("invalid.token.here")
-
-
-def test_decode_jwt_expired():
-    import jwt as pyjwt
-    from datetime import datetime, timedelta, timezone
-    from app.config import settings
-
-    payload = {
-        "sub": "user_123",
-        "iat": datetime.now(timezone.utc) - timedelta(hours=48),
-        "exp": datetime.now(timezone.utc) - timedelta(hours=24),
-    }
-    token = pyjwt.encode(payload, settings.jwt_secret, algorithm="HS256")
-    with pytest.raises(Exception):
-        decode_jwt(token)
 
 
 # ── Rate Limiter (unit) ───────────────────────────────────────────
@@ -98,11 +67,11 @@ def test_rate_limiter_resets_after_window():
     assert rl.check("user1") is True
 
 
-# ── Register endpoint (needs PostgreSQL) ──────────────────────────
+# ── Register / login (needs PostgreSQL) ───────────────────────────
 
 
-def test_register_creates_user():
-    """POST /v1/auth/register returns user_id, access_token, and api_key."""
+def test_register_issues_api_key():
+    """POST /v1/auth/register returns user_id and a cloud-issued pk_ API key."""
     resp = client.post(
         "/v1/auth/register",
         json={"email": "alice@example.com", "username": "alice", "password": "secret123"},
@@ -110,8 +79,8 @@ def test_register_creates_user():
     assert resp.status_code == 200
     data = resp.json()
     assert "user_id" in data
-    assert data["access_token"]
     assert data["api_key"].startswith("pk_")
+    assert "access_token" not in data
 
 
 def test_register_duplicate_email_409():
@@ -121,7 +90,7 @@ def test_register_duplicate_email_409():
     assert resp.status_code == 409
 
 
-def test_login_returns_jwt():
+def test_login_issues_fresh_api_key():
     client.post(
         "/v1/auth/register",
         json={"email": "bob@example.com", "username": "bob", "password": "secret123"},
@@ -131,8 +100,25 @@ def test_login_returns_jwt():
         json={"email": "bob@example.com", "password": "secret123"},
     )
     assert resp.status_code == 200
-    token = resp.json()["access_token"]
-    assert decode_jwt(token)["sub"] == resp.json()["user_id"]
+    assert resp.json()["api_key"].startswith("pk_")
+    assert "access_token" not in resp.json()
+
+
+def test_login_rotates_and_invalidates_old_key():
+    reg = client.post(
+        "/v1/auth/register",
+        json={"email": "roy@example.com", "username": "roy", "password": "secret123"},
+    ).json()
+    old_key = reg["api_key"]
+    login = client.post(
+        "/v1/auth/login",
+        json={"email": "roy@example.com", "password": "secret123"},
+    ).json()
+    assert login["api_key"] != old_key
+    # Old key must be rejected
+    assert client.get("/v1/projects", headers={"X-API-Key": old_key}).status_code == 401
+    # Fresh key works
+    assert client.get("/v1/projects", headers={"X-API-Key": login["api_key"]}).status_code == 200
 
 
 def test_login_invalid_password_401():
@@ -150,13 +136,21 @@ def test_login_invalid_password_401():
 # ── Auth enforcement (needs PostgreSQL) ───────────────────────────
 
 
-def test_unauthenticated_returns_401():
-    resp = client.get("/v1/projects")
-    assert resp.status_code == 401
+def test_missing_api_key_returns_401():
+    assert client.get("/v1/projects").status_code == 401
 
 
 def test_invalid_api_key_returns_401():
-    resp = client.get("/v1/projects", headers={"X-API-Key": "pk_invalid"})
+    assert client.get("/v1/projects", headers={"X-API-Key": "pk_invalid"}).status_code == 401
+
+
+def test_bearer_header_not_accepted():
+    """Strict: an API key sent as Authorization: Bearer must be rejected."""
+    reg = client.post(
+        "/v1/auth/register",
+        json={"email": "bear@example.com", "username": "bear", "password": "secret123"},
+    ).json()
+    resp = client.get("/v1/projects", headers={"Authorization": f"Bearer {reg['api_key']}"})
     assert resp.status_code == 401
 
 
@@ -169,61 +163,29 @@ def test_valid_api_key_passes_auth():
     assert resp.status_code == 200
 
 
-def test_valid_jwt_passes_auth():
-    reg = client.post(
-        "/v1/auth/register",
-        json={"email": "erin@example.com", "username": "erin", "password": "secret123"},
-    ).json()
-    resp = client.get(
-        "/v1/projects",
-        headers={"Authorization": f"Bearer {reg['access_token']}"},
-    )
-    assert resp.status_code == 200
-
-
-def test_expired_jwt_returns_401():
-    import jwt as pyjwt
-    from datetime import datetime, timedelta, timezone
-    from app.config import settings
-
-    payload = {
-        "sub": "u_fake",
-        "iat": datetime.now(timezone.utc) - timedelta(hours=48),
-        "exp": datetime.now(timezone.utc) - timedelta(hours=24),
-    }
-    token = pyjwt.encode(payload, settings.jwt_secret, algorithm="HS256")
-    resp = client.get("/v1/projects", headers={"Authorization": f"Bearer {token}"})
-    assert resp.status_code == 401
-
-
-def test_tampered_jwt_returns_401():
-    reg = client.post(
-        "/v1/auth/register",
-        json={"email": "frank@example.com", "username": "frank", "password": "secret123"},
-    ).json()
-    tampered = reg["access_token"][:-5] + "XXXXX"
-    resp = client.get("/v1/projects", headers={"Authorization": f"Bearer {tampered}"})
-    assert resp.status_code == 401
-
-
 def test_mint_api_key_rotates_and_invalidates_old():
     reg = client.post(
         "/v1/auth/register",
         json={"email": "grace@example.com", "username": "grace", "password": "secret123"},
     ).json()
     old_key = reg["api_key"]
-    new = client.post(
-        "/v1/auth/api-key",
-        headers={"X-API-Key": old_key},
-    ).json()
+    new = client.post("/v1/auth/api-key", headers={"X-API-Key": old_key}).json()
     assert new["api_key"].startswith("pk_")
     assert new["api_key"] != old_key
     # Old key is invalidated
-    resp = client.get("/v1/projects", headers={"X-API-Key": old_key})
-    assert resp.status_code == 401
+    assert client.get("/v1/projects", headers={"X-API-Key": old_key}).status_code == 401
     # New key works
-    resp = client.get("/v1/projects", headers={"X-API-Key": new["api_key"]})
+    assert client.get("/v1/projects", headers={"X-API-Key": new["api_key"]}).status_code == 200
+
+
+def test_me_returns_current_user():
+    reg = client.post(
+        "/v1/auth/register",
+        json={"email": "me@example.com", "username": "me_user", "password": "secret123"},
+    ).json()
+    resp = client.get("/v1/auth/me", headers={"X-API-Key": reg["api_key"]})
     assert resp.status_code == 200
+    assert resp.json()["username"] == "me_user"
 
 
 # ── User scoping ──────────────────────────────────────────────────

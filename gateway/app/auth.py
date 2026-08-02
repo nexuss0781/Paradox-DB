@@ -1,21 +1,23 @@
-"""Authentication utilities — JWT + bcrypt password hashing + API keys."""
+"""Authentication utilities — bcrypt password hashing + cloud-issued API keys.
+
+The cloud issues every user an API key (`pk_...`). Keys are SHA-256 hashed
+at rest; the plaintext is shown once at issue time. All authenticated
+endpoints require the `X-API-Key` header.
+"""
 
 import hashlib
 import secrets
-from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import bcrypt
-import jwt
-from fastapi import Depends, Header, HTTPException, Request, Security
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi import Depends, HTTPException, Request, Security
+from fastapi.security import APIKeyHeader
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .config import settings
 from .database import get_db
 
-bearer_scheme = HTTPBearer(auto_error=False)
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
 def hash_password(password: str) -> str:
@@ -34,52 +36,24 @@ def hash_api_key(key: str) -> str:
     return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
-def create_jwt(user_id: str, expires_hours: int = 24) -> str:
-    payload = {
-        "sub": user_id,
-        "iat": datetime.now(timezone.utc),
-        "exp": datetime.now(timezone.utc) + timedelta(hours=expires_hours),
-    }
-    return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
-
-
-def decode_jwt(token: str) -> dict:
-    try:
-        return jwt.decode(token, settings.jwt_secret, algorithms=["HS256"])
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Token expired")
-    except jwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Invalid token")
-
-
 async def get_current_user(
     request: Request,
-    bearer: Optional[HTTPAuthorizationCredentials] = Security(bearer_scheme),
-    api_key: Optional[str] = Header(default=None, alias="X-API-Key"),
+    api_key: Optional[str] = Security(api_key_header),
     db: AsyncSession = Depends(get_db),
 ):
-    """Extract user from a Bearer JWT token or an X-API-Key header."""
+    """Resolve the authenticated user from a cloud-issued API key."""
     from .models import User
 
-    if not bearer and not api_key:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+    if not api_key:
+        raise HTTPException(status_code=401, detail="Missing X-API-Key header")
 
-    if bearer:
-        payload = decode_jwt(bearer.credentials)
-        user_id = payload.get("sub")
-        if not user_id:
-            raise HTTPException(status_code=401, detail="Invalid token payload")
-        result = await db.execute(select(User).where(User.id == user_id))
-        user = result.scalar_one_or_none()
-        if not user or not user.is_active:
-            raise HTTPException(status_code=401, detail="User not found or inactive")
-        request.state.user_id = str(user_id)
-        return user
-
-    result = await db.execute(select(User).where(User.api_key_hash == hash_api_key(api_key)))
+    result = await db.execute(
+        select(User).where(User.api_key_hash == hash_api_key(api_key))
+    )
     user = result.scalar_one_or_none()
     if not user or not user.is_active:
         raise HTTPException(status_code=401, detail="Invalid API key")
+
     request.state.user_id = str(user.id)
     return user
 
@@ -90,16 +64,16 @@ class RateLimiter:
         self.window = window_seconds
         self._requests: dict[str, list[float]] = {}
 
-    def check(self, user_id: str) -> bool:
+    def check(self, key: str) -> bool:
         import time
         now = time.time()
-        self._requests.setdefault(user_id, [])
-        self._requests[user_id] = [
-            t for t in self._requests[user_id] if now - t < self.window
+        self._requests.setdefault(key, [])
+        self._requests[key] = [
+            t for t in self._requests[key] if now - t < self.window
         ]
-        if len(self._requests[user_id]) >= self.max_requests:
+        if len(self._requests[key]) >= self.max_requests:
             return False
-        self._requests[user_id].append(now)
+        self._requests[key].append(now)
         return True
 
 

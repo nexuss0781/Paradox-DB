@@ -56,6 +56,14 @@ export interface RollbackResponse {
   new_message_id: string;
 }
 
+/** Cloud-issued credentials — the API key is shown once and hashed at rest. */
+export interface AuthResult {
+  user_id: string;
+  email: string;
+  username: string;
+  api_key: string;
+}
+
 /** Network/5xx failures mean offline. 409 is a conflict, not offline. */
 export function isConnectivityError(err: unknown): boolean {
   if (err instanceof GatewayError) {
@@ -83,7 +91,7 @@ export class GatewayClient {
   private headers(): Record<string, string> {
     const h: Record<string, string> = { 'Content-Type': 'application/json' };
     if (this.apiKey) {
-      h['Authorization'] = `Bearer ${this.apiKey}`;
+      h['X-API-Key'] = this.apiKey;
     }
     return h;
   }
@@ -126,16 +134,23 @@ export class GatewayClient {
     return buf as unknown as T;
   }
 
-  async login(email: string, password: string): Promise<{ access_token: string }> {
-    return this.request<{ access_token: string }>('POST', '/auth/login', undefined, { email, password });
+  /** Login issues a fresh cloud API key (the previous key is invalidated). */
+  async login(email: string, password: string): Promise<AuthResult> {
+    return this.request<AuthResult>('POST', '/auth/login', undefined, { email, password });
   }
 
-  async registerEmail(email: string, username: string, password: string): Promise<{ access_token: string }> {
-    return this.request<{ access_token: string }>('POST', '/auth/register', undefined, {
+  /** Register creates the account and returns the first cloud API key. */
+  async registerEmail(email: string, username: string, password: string): Promise<AuthResult> {
+    return this.request<AuthResult>('POST', '/auth/register', undefined, {
       email,
       username,
       password,
     });
+  }
+
+  /** Mint a fresh API key for the current user (the old key is invalidated). */
+  async mintApiKey(): Promise<AuthResult> {
+    return this.request<AuthResult>('POST', '/auth/api-key');
   }
 
   async authMe(): Promise<Record<string, unknown>> {

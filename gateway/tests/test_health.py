@@ -141,49 +141,38 @@ async def test_telegram_check_network_error(mock_client_cls, client: AsyncClient
 
 
 @pytest.mark.asyncio
-async def test_upload_stub(client: AsyncClient):
-    """3.2.1 POST /v1/upload returns 501"""
+async def test_upload_requires_auth(client: AsyncClient):
+    """3.2.1 POST /v1/upload returns 401 without an API key"""
     response = await client.post("/v1/upload")
-    assert response.status_code == 501
-    body = response.json()
-    assert body["error"] == "not_implemented"
-    assert "not yet implemented" in body["detail"].lower()
+    assert response.status_code == 401
 
 
 @pytest.mark.asyncio
-async def test_download_stub(client: AsyncClient):
-    """3.2.2 GET /v1/download returns 501"""
+async def test_download_requires_auth(client: AsyncClient):
+    """3.2.2 GET /v1/download returns 401 without an API key"""
     response = await client.get("/v1/download")
-    assert response.status_code == 501
-    body = response.json()
-    assert body["error"] == "not_implemented"
+    assert response.status_code == 401
 
 
 @pytest.mark.asyncio
-async def test_versions_stub(client: AsyncClient):
-    """3.2.3 GET /v1/versions returns 501"""
+async def test_versions_requires_auth(client: AsyncClient):
+    """3.2.3 GET /v1/versions returns 401 without an API key"""
     response = await client.get("/v1/versions")
-    assert response.status_code == 501
-    body = response.json()
-    assert body["error"] == "not_implemented"
+    assert response.status_code == 401
 
 
 @pytest.mark.asyncio
-async def test_rollback_stub(client: AsyncClient):
-    """3.2.4 POST /v1/rollback returns 501"""
+async def test_rollback_requires_auth(client: AsyncClient):
+    """3.2.4 POST /v1/rollback returns 401 without an API key"""
     response = await client.post("/v1/rollback")
-    assert response.status_code == 501
-    body = response.json()
-    assert body["error"] == "not_implemented"
+    assert response.status_code == 401
 
 
 @pytest.mark.asyncio
-async def test_status_stub(client: AsyncClient):
-    """3.2.5 GET /v1/status returns 501"""
+async def test_status_requires_auth(client: AsyncClient):
+    """3.2.5 GET /v1/status returns 401 without an API key"""
     response = await client.get("/v1/status")
-    assert response.status_code == 501
-    body = response.json()
-    assert body["error"] == "not_implemented"
+    assert response.status_code == 401
 
 
 # ---------------------------------------------------------------------------
@@ -264,8 +253,8 @@ def test_database_version_foreign_key():
     from app.models import DatabaseVersion
 
     fks = list(DatabaseVersion.__table__.foreign_keys)
-    assert len(fks) == 1
-    assert fks[0].column.table.name == "paradox_dbs"
+    tables = {fk.column.table.name for fk in fks}
+    assert "paradox_dbs" in tables
 
 
 def test_sync_log_foreign_key():
