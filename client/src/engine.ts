@@ -171,6 +171,41 @@ export class ClientEngine {
     return this.execute(`DELETE FROM ${table} WHERE ${clauses.join(' AND ')}`, values).changes;
   }
 
+  /** Fetch the first row matching `where`, or null when nothing matches. */
+  get(table: string, where: Record<string, any>): any | null {
+    const rows = this.select(table, where, { limit: 1 });
+    return rows[0] ?? null;
+  }
+
+  /** Insert many rows atomically (single transaction). Returns each rowid. */
+  insertMany(table: string, rows: Record<string, any>[]): number[] {
+    if (!this.db) throw new DatabaseNotOpenError();
+    if (rows.length === 0) return [];
+    const insertAll = this.db.transaction((all: Record<string, any>[]) => all.map((row) => this.insert(table, row)));
+    return insertAll(rows);
+  }
+
+  /**
+   * Insert `row`, or when a conflict on `conflictColumns` occurs, update the
+   * existing row with every non-conflict column (`col = excluded.col`).
+   * Returns the number of rows affected (1 inserted or 1 updated, 0 on
+   * DO NOTHING).
+   */
+  upsert(table: string, row: Record<string, any>, conflictColumns: string | string[]): number {
+    const conflict = Array.isArray(conflictColumns) ? conflictColumns : [conflictColumns];
+    if (conflict.length === 0) throw new Error('upsert requires at least one conflict column');
+    const keys = Object.keys(row);
+    const values = Object.values(row);
+    const placeholders = keys.map(() => '?').join(', ');
+    const conflictList = conflict.join(', ');
+    const setClauses = keys.filter((k) => !conflict.includes(k)).map((k) => `${k} = excluded.${k}`);
+    const sql =
+      setClauses.length > 0
+        ? `INSERT INTO ${table} (${keys.join(', ')}) VALUES (${placeholders}) ON CONFLICT(${conflictList}) DO UPDATE SET ${setClauses.join(', ')}`
+        : `INSERT INTO ${table} (${keys.join(', ')}) VALUES (${placeholders}) ON CONFLICT(${conflictList}) DO NOTHING`;
+    return this.execute(sql, values).changes;
+  }
+
   /** Return the current PLAINTEXT SQLite bytes (not encrypted). */
   getRawBytes(): Buffer {
     if (this.tmpPath) {

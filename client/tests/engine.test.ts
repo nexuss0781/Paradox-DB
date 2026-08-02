@@ -118,6 +118,59 @@ describe('ClientEngine', () => {
     eng.close();
   });
 
+  it('get / insertMany / upsert helpers work', () => {
+    const p = path.join(tmpDir, 'helpers.db');
+    const eng = new ClientEngine(p, 'secret');
+    eng.open(true);
+    eng.execute('CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT UNIQUE, age INTEGER)');
+
+    const ids = eng.insertMany('t', [
+      { name: 'a', age: 1 },
+      { name: 'b', age: 2 },
+    ]);
+    expect(ids).toEqual([1, 2]);
+
+    expect(eng.get('t', { name: 'a' })).toMatchObject({ id: 1, name: 'a', age: 1 });
+    expect(eng.get('t', { name: 'zzz' })).toBeNull();
+
+    const newId = eng.upsert('t', { id: 3, name: 'c', age: 3 }, 'id');
+    expect(newId).toBe(1);
+    expect(eng.get('t', { name: 'c' }).age).toBe(3);
+
+    const updId = eng.upsert('t', { name: 'a', age: 10 }, 'name');
+    const rowA = eng.get('t', { name: 'a' });
+    expect(rowA.age).toBe(10);
+    expect(rowA.id).toBe(1);
+    expect(updId).toBe(1);
+
+    const before = eng.select('t').length;
+    const noop = eng.upsert('t', { id: 1 }, 'id');
+    expect(noop).toBe(0);
+    expect(eng.select('t').length).toBe(before);
+
+    eng.close();
+  });
+
+  it('insertMany with an empty array is a no-op and returns []', () => {
+    const p = path.join(tmpDir, 'emptymany.db');
+    const eng = new ClientEngine(p, 'secret');
+    eng.open(true);
+    eng.execute('CREATE TABLE t (v TEXT)');
+    expect(eng.insertMany('t', [])).toEqual([]);
+    eng.close();
+  });
+
+  it('upsert rolls back on missing conflict column and throws', () => {
+    const p = path.join(tmpDir, 'badupsert.db');
+    const eng = new ClientEngine(p, 'secret');
+    eng.open(true);
+    eng.execute('CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)');
+    expect(() => eng.upsert('t', { id: 1, name: 'x' }, [])).toThrow(
+      'upsert requires at least one conflict column'
+    );
+    eng.close();
+  });
+
   it('throws DatabaseNotOpenError when executing while closed', () => {
     const eng = new ClientEngine(path.join(tmpDir, 'closed.db'), 'secret');
     expect(() => eng.execute('SELECT 1')).toThrow('Database not open');
