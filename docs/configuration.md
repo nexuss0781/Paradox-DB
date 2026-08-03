@@ -42,6 +42,7 @@ All configuration via environment variables:
 | `API_KEY_SALT` | Yes | — | Salt for API key hashing |
 | `MAX_UPLOAD_SIZE_MB` | No | `50` | Max upload size |
 | `RATE_LIMIT_UPLOADS_PER_MINUTE` | No | `15` | Telegram upload rate limit |
+| `TELEGRAM_RATE_LIMIT_HALT` | No | `false` | `true` stops the service entirely when Telegram returns 429 (kill switch) |
 | `LOCK_TIMEOUT_SECONDS` | No | `30` | Distributed lock timeout |
 
 ### Docker Compose

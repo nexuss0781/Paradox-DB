@@ -95,6 +95,13 @@ async def telegram_check():
                 if data.get("ok"):
                     await log_operation("health", "Telegram check: ok", "success")
                     return HealthResponse(status="ok")
+            if resp.status_code == 401:
+                telegram_api_errors.labels(error_type="http_401").inc()
+                await log_operation("health", "Telegram check: bot token invalid or revoked", "fail")
+                return JSONResponse(
+                    status_code=503,
+                    content={"status": "invalid_token", "error": "TELEGRAM_BOT_TOKEN is invalid or revoked"},
+                )
             telegram_api_errors.labels(error_type=f"http_{resp.status_code}").inc()
             await log_operation("health", f"Telegram check: unreachable (HTTP {resp.status_code})", "fail")
             return JSONResponse(

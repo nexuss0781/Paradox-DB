@@ -1,5 +1,5 @@
-import uuid
 import traceback
+import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Response
@@ -8,9 +8,16 @@ from fastapi.responses import JSONResponse
 from prometheus_client import CONTENT_TYPE_LATEST
 
 from app.database import close_db, init_db
+from app.halt import maybe_halt_on_rate_limit
 from app.logging_config import setup_logging
 from app.metrics import MetricsMiddleware, get_metrics
-from app.routers import auth, health, test, notifications, projects, databases
+from app.routers import auth, databases, health, notifications, projects, test
+from app.services.telegram import (
+    TelegramError,
+    TelegramRateLimitError,
+    TelegramServerError,
+    TelegramUnauthorizedError,
+)
 from app.telegram_logger import log_operation
 
 
@@ -24,7 +31,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Paradox-DB Gateway",
-    version="2.1.0",
+    version="2.1.1",
     description="Web Gateway for Telegram-synced SQLite database",
     lifespan=lifespan,
 )
@@ -58,6 +65,47 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 
+@app.exception_handler(TelegramError)
+async def telegram_error_handler(request: Request, exc: TelegramError):
+    """Safety net: any Telegram error that escapes a route is mapped cleanly.
+
+    A 429 additionally trips the rate-limit kill switch (if enabled).
+    """
+    if isinstance(exc, TelegramRateLimitError):
+        halted = maybe_halt_on_rate_limit(
+            exc, context=f"request {request.method} {request.url.path}"
+        )
+        if halted:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "error": "service_stopping",
+                    "detail": "Telegram rate limit triggered kill switch; service is halting",
+                },
+            )
+        return JSONResponse(
+            status_code=429,
+            content={"error": "rate_limited", "retry_after": exc.retry_after},
+        )
+    if isinstance(exc, TelegramUnauthorizedError):
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": "telegram_unauthorized",
+                "detail": f"Telegram bot token is invalid or revoked: {exc}",
+            },
+        )
+    if isinstance(exc, TelegramServerError):
+        return JSONResponse(
+            status_code=502,
+            content={"error": "telegram_unavailable", "detail": str(exc)},
+        )
+    return JSONResponse(
+        status_code=502,
+        content={"error": "telegram_failed", "detail": str(exc)},
+    )
+
+
 @app.middleware("http")
 async def request_id_middleware(request: Request, call_next):
     request.state.request_id = str(uuid.uuid4())
@@ -82,4 +130,4 @@ app.include_router(databases.router, tags=["databases"])
 @app.get("/")
 async def root():
     await log_operation("gateway", "Gateway info requested", "info")
-    return {"service": "paradox-db-gateway", "version": "2.1.0"}
+    return {"service": "paradox-db-gateway", "version": "2.1.1"}

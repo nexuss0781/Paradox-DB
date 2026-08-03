@@ -23,6 +23,8 @@ services:
         generateValue: true
       - key: API_KEY_SALT
         generateValue: true
+      - key: TELEGRAM_RATE_LIMIT_HALT
+        sync: false
       - key: PORT
         value: 8000
 

@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     max_upload_size_mb: int = 50
     rate_limit_uploads_per_minute: int = 15
     lock_timeout_seconds: int = 30
+    telegram_rate_limit_halt: bool = False
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
