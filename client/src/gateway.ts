@@ -10,6 +10,8 @@ export interface UploadParams {
   file_bytes: Buffer;
   version: number;
   version_type?: string;
+  storage_channel?: string;
+  log_channel?: string;
 }
 
 export interface UploadResult {
@@ -105,6 +107,7 @@ export class GatewayClient {
         headers: this.headers(),
         body: body !== undefined ? JSON.stringify(body) : undefined,
         redirect: 'follow',
+        signal: AbortSignal.timeout(COLD_START_TIMEOUT_MS),
       });
     } catch (err) {
       throw new GatewayError(0, err instanceof Error ? err.message : String(err));
@@ -201,20 +204,29 @@ export class GatewayClient {
     if (params.database_name) payload.database_name = params.database_name;
     if (params.database_id) payload.database_id = params.database_id;
     if (params.project_id) payload.project_id = params.project_id;
+    if (params.storage_channel) payload.storage_channel = params.storage_channel;
+    if (params.log_channel) payload.log_channel = params.log_channel;
     return this.request<UploadResult>('POST', '/upload', undefined, payload);
   }
 
-  async download(database_name = '', version?: number, database_id = '', project_id = ''): Promise<DownloadResult> {
+  async download(
+    database_name = '',
+    version?: number,
+    database_id = '',
+    project_id = '',
+    storage_channel = '',
+  ): Promise<DownloadResult> {
     const params = new URLSearchParams();
     if (database_id) params.set('database_id', database_id);
     else if (database_name) params.set('database_name', database_name);
     if (project_id) params.set('project_id', project_id);
     if (version !== undefined) params.set('version', String(version));
+    if (storage_channel) params.set('storage_channel', storage_channel);
 
     const url = `${this.gatewayUrl}/download?${params.toString()}`;
     let resp: Response;
     try {
-      resp = await fetch(url, { method: 'GET', headers: this.headers(), redirect: 'follow' });
+      resp = await fetch(url, { method: 'GET', headers: this.headers(), redirect: 'follow', signal: AbortSignal.timeout(COLD_START_TIMEOUT_MS) });
     } catch (err) {
       throw new GatewayError(0, err instanceof Error ? err.message : String(err));
     }

@@ -2,15 +2,12 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import * as path from 'node:path';
-import * as os from 'node:os';
 import * as readline from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
 import { connect } from './connection.js';
 import { GatewayClient } from './gateway.js';
-import { loadConfig, saveConfig, getDefaultConfigPath } from './config.js';
+import { loadConfig, saveConfig } from './config.js';
 import * as state from './state.js';
-import { encryptFile } from './crypto.js';
-import * as fs from 'node:fs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 

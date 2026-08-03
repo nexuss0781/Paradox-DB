@@ -524,6 +524,8 @@ async def upload(
     version_type = body.get("version_type", "auto")
     client_version = body.get("version")
     encryption_key = body.get("encryption_key", "")
+    storage_chat_id = body.get("storage_chat_id", "")
+    log_chat_id = body.get("log_chat_id", "")
 
     # Resolve database_id from project_id + name if needed
     if not database_id and project_id and database_name:
@@ -627,13 +629,30 @@ async def upload(
         }
 
         try:
-            message_id = await tg.upload_file(
-                settings.telegram_storage_chat_id, file_bytes, caption
-            )
+            storage_targets = [settings.telegram_storage_chat_id]
+            if storage_chat_id and storage_chat_id != settings.telegram_storage_chat_id:
+                storage_targets.append(storage_chat_id)
+            message_id = ""
+            for idx, chat_id in enumerate(storage_targets):
+                mid = await tg.upload_file(chat_id, file_bytes, caption)
+                if idx == 0:
+                    message_id = mid
         except TelegramRateLimitError as e:
             return JSONResponse(status_code=429, content={"error": "rate_limited", "retry_after": e.retry_after})
         except Exception as e:
             return JSONResponse(status_code=502, content={"error": "telegram_failed", "detail": str(e)})
+
+        # Notify the SDK's log channel (if any) in addition to the system log
+        if log_chat_id:
+            try:
+                await log_operation(
+                    "upload",
+                    f"{paradox_db.name} v{new_version} stored in {', '.join(storage_targets)}",
+                    "success",
+                    extra_chat_ids=[log_chat_id],
+                )
+            except Exception:
+                pass
 
         # Update database record
         paradox_db.latest_version = new_version
@@ -702,6 +721,7 @@ async def download(
     database_name: str = Query(default=""),
     version: int | None = Query(default=None),
     encryption_key: str = Query(default=""),
+    storage_chat_id: str = Query(default=""),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -754,7 +774,7 @@ async def download(
     )
     try:
         file_bytes = await tg.download_file(
-            channel_id=settings.telegram_storage_chat_id,
+            channel_id=storage_chat_id or settings.telegram_storage_chat_id,
             message_id=message_id,
         )
     except Exception as e:
@@ -853,6 +873,7 @@ async def legacy_rollback(
 
     database_name = body.get("database_name", "")
     target_version = body.get("target_version")
+    storage_chat_id = body.get("storage_chat_id", "")
 
     if not database_name or not target_version:
         return JSONResponse(status_code=400, content={"error": "database_name and target_version required"})
@@ -887,7 +908,7 @@ async def legacy_rollback(
     )
     try:
         file_bytes = await tg.download_file(
-            channel_id=settings.telegram_storage_chat_id,
+            channel_id=storage_chat_id or settings.telegram_storage_chat_id,
             message_id=ver.message_id,
         )
     except Exception as e:
@@ -906,9 +927,14 @@ async def legacy_rollback(
     }
 
     try:
-        msg_id = await tg.upload_file(
-            settings.telegram_storage_chat_id, file_bytes, caption
-        )
+        targets = [settings.telegram_storage_chat_id]
+        if storage_chat_id and storage_chat_id != settings.telegram_storage_chat_id:
+            targets.append(storage_chat_id)
+        msg_id = ""
+        for idx, chat_id in enumerate(targets):
+            mid = await tg.upload_file(chat_id, file_bytes, caption)
+            if idx == 0:
+                msg_id = mid
     except Exception as e:
         return JSONResponse(status_code=502, content={"error": "telegram_upload_failed", "detail": str(e)})
 
