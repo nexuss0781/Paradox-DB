@@ -117,7 +117,7 @@ async def test_telegram_check_api_error(mock_client_cls, client: AsyncClient):
         mock_settings.telegram_bot_token = "bad-token"
         response = await client.get("/health/telegram")
     assert response.status_code == 503
-    assert response.json()["status"] == "unreachable"
+    assert response.json()["status"] == "invalid_token"
 
 
 @pytest.mark.asyncio
@@ -277,4 +277,4 @@ async def test_root_endpoint(client: AsyncClient):
     assert response.status_code == 200
     body = response.json()
     assert body["service"] == "paradox-db-gateway"
-    assert body["version"] == "2.0.1"
+    assert body["version"] == "2.1.1"

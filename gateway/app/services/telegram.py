@@ -1,26 +1,123 @@
 import asyncio
-import hashlib
 import json
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 import httpx
 
 
 class TelegramError(Exception):
-    """Base exception for Telegram API errors."""
+    """Base exception for Telegram API errors.
+
+    Carries the machine-readable `parameters` from the response (e.g.
+    `retry_after`, `migrate_to_chat_id`).
+    """
+
+    error_code: int = 0
+
+    def __init__(self, message: str, parameters: dict | None = None):
+        super().__init__(message)
+        self.parameters = parameters or {}
 
 
 class TelegramRateLimitError(TelegramError):
-    """Raised when Telegram returns 429 Too Many Requests."""
+    """Raised when Telegram returns 429 Too Many Requests (HTTP or local limiter)."""
+
+    error_code = 429
 
     def __init__(self, message: str, retry_after: int = 30):
         super().__init__(message)
         self.retry_after = retry_after
 
 
+class TelegramUnauthorizedError(TelegramError):
+    """Raised on 401 — the bot token is invalid or has been revoked."""
+
+    error_code = 401
+
+
+class TelegramMigratedError(TelegramError):
+    """Raised on 400 when the chat migrated to a supergroup.
+
+    Use `migrate_to_chat_id` to re-target subsequent requests.
+    """
+
+    error_code = 400
+
+    def __init__(self, message: str, migrate_to_chat_id: int):
+        super().__init__(message)
+        self.migrate_to_chat_id = migrate_to_chat_id
+
+
+class TelegramForbiddenError(TelegramError):
+    """Raised on 403 — blocked, kicked, no rights, or not a member."""
+
+    error_code = 403
+
+
+class TelegramNotFoundError(TelegramError):
+    """Raised on 404 — the referenced object does not exist."""
+
+    error_code = 404
+
+
+class TelegramConflictError(TelegramError):
+    """Raised on 409 — webhook and getUpdates used simultaneously."""
+
+    error_code = 409
+
+
+class TelegramServerError(TelegramError):
+    """Raised on 5xx — Telegram API hiccup; safe to retry."""
+
+    error_code = 500
+
+
 class TelegramPermanentError(TelegramError):
-    """Raised for non-retryable Telegram API errors."""
+    """Raised for any other non-retryable Telegram API error."""
+
+    error_code = 400
+
+
+def raise_for_status(resp, action: str) -> None:
+    """Raise the matching TelegramError for a non-200 Bot API response.
+
+    Classifies by the JSON `error_code` (falling back to the HTTP status) and
+    extracts the `parameters` field (retry_after / migrate_to_chat_id).
+    """
+    if resp.status_code == 200:
+        return
+    payload = None
+    try:
+        payload = resp.json()
+    except Exception:
+        pass
+    payload = payload or {}
+    error_code = payload.get("error_code", resp.status_code) or resp.status_code
+    description = (
+        payload.get("description")
+        or payload.get("message")
+        or resp.text
+        or f"{action} failed (HTTP {resp.status_code})"
+    )
+    parameters = payload.get("parameters") or {}
+
+    if error_code == 429:
+        raise TelegramRateLimitError(
+            description, retry_after=parameters.get("retry_after", 30)
+        )
+    if error_code == 401:
+        raise TelegramUnauthorizedError(description, parameters)
+    if error_code == 400 and parameters.get("migrate_to_chat_id"):
+        raise TelegramMigratedError(description, parameters["migrate_to_chat_id"])
+    if error_code == 403:
+        raise TelegramForbiddenError(description, parameters)
+    if error_code == 404:
+        raise TelegramNotFoundError(description, parameters)
+    if error_code == 409:
+        raise TelegramConflictError(description, parameters)
+    if error_code >= 500:
+        raise TelegramServerError(description, parameters)
+    raise TelegramPermanentError(description, parameters)
 
 
 class TelegramClient:
@@ -53,7 +150,7 @@ class TelegramClient:
                         "chat_id": user_id,
                         "name": f"paradox_{user_id}",
                         "expire_date": int(
-                            datetime.now(timezone.utc).timestamp()
+                            datetime.now(UTC).timestamp()
                         )
                         + 86400 * 365,
                     },
@@ -64,7 +161,7 @@ class TelegramClient:
                     chat_id = chat.get("id", "")
                     if chat_id:
                         return str(chat_id)
-            except (httpx.HTTPError, KeyError):
+            except (httpx.HTTPError, KeyError, TelegramError):
                 pass
 
             try:
@@ -74,7 +171,7 @@ class TelegramClient:
                 )
                 if resp.status_code == 200:
                     return str(resp.json().get("result", {}).get("id", ""))
-            except (httpx.HTTPError, KeyError):
+            except (httpx.HTTPError, KeyError, TelegramError):
                 pass
 
         return ""
@@ -85,7 +182,8 @@ class TelegramClient:
         """Upload a file to a channel via sendDocument.
 
         Returns the message_id of the sent message.
-        Raises TelegramRateLimitError on 429, TelegramPermanentError on other failures.
+        Raises the matching TelegramError subclass (TelegramRateLimitError on 429,
+        TelegramUnauthorizedError on 401, etc.) on failure.
         """
         await self._check_rate_limit(channel_id)
         async with httpx.AsyncClient(timeout=60.0) as client:
@@ -111,7 +209,7 @@ class TelegramClient:
                     "Rate limited", retry_after=retry_after
                 )
             if resp.status_code != 200:
-                raise TelegramPermanentError(f"Upload failed: {resp.text}")
+                raise_for_status(resp, "upload_file")
             result = resp.json()["result"]
             file_id = ""
             doc = result.get("document")
@@ -132,7 +230,7 @@ class TelegramClient:
 
         Uses forwardMessage to retrieve the message, then extracts the file.
         Returns raw file bytes.
-        Raises TelegramPermanentError if the message or file cannot be resolved.
+        Raises the matching TelegramError subclass on failure.
         """
         async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.post(
@@ -144,9 +242,7 @@ class TelegramClient:
                 },
             )
             if resp.status_code != 200:
-                raise TelegramPermanentError(
-                    f"Forward failed: {resp.text}"
-                )
+                raise_for_status(resp, "download_file")
             result = resp.json().get("result", {})
             doc = result.get("document")
             if not doc:
@@ -162,14 +258,14 @@ class TelegramClient:
                 json={"file_id": file_id},
             )
             if resp2.status_code != 200:
-                raise TelegramPermanentError(f"getFile failed: {resp2.text}")
+                raise_for_status(resp2, "getFile")
             file_path = resp2.json()["result"]["file_path"]
 
             resp3 = await client.get(
                 f"https://api.telegram.org/file/bot{self.bot_token}/{file_path}"
             )
             if resp3.status_code != 200:
-                raise TelegramPermanentError("Download failed")
+                raise TelegramServerError(f"Download failed (HTTP {resp3.status_code})")
             return resp3.content
 
     async def download_file_by_id(self, file_id: str) -> bytes:
@@ -180,14 +276,14 @@ class TelegramClient:
                 json={"file_id": file_id},
             )
             if resp.status_code != 200:
-                raise TelegramPermanentError(f"getFile failed: {resp.text}")
+                raise_for_status(resp, "getFile")
             file_path = resp.json()["result"]["file_path"]
 
             resp2 = await client.get(
                 f"https://api.telegram.org/file/bot{self.bot_token}/{file_path}"
             )
             if resp2.status_code != 200:
-                raise TelegramPermanentError("Download failed")
+                raise TelegramServerError(f"Download failed (HTTP {resp2.status_code})")
             return resp2.content
 
     async def get_file_metadata(
@@ -196,7 +292,7 @@ class TelegramClient:
         """Get file metadata without downloading the actual bytes.
 
         Returns a dict with file_id, file_size, and file_name keys.
-        Raises TelegramPermanentError if the message is not found.
+        Raises the matching TelegramError subclass if the message is not found.
         """
         async with httpx.AsyncClient() as client:
             resp = await client.post(
@@ -207,7 +303,7 @@ class TelegramClient:
                 },
             )
             if resp.status_code != 200:
-                raise TelegramPermanentError("Message not found")
+                raise_for_status(resp, "get_file_metadata")
             result = resp.json().get("result", {})
             doc = result.get("document")
             if doc:
@@ -247,14 +343,22 @@ class TelegramClient:
                 await asyncio.sleep(wait_time)
         self._global_counts.append(asyncio.get_event_loop().time())
 
-    async def is_healthy(self) -> bool:
-        """Check if the bot token is valid by calling getMe."""
+    async def is_healthy(self) -> tuple[bool, str]:
+        """Check if the bot token is valid by calling getMe.
+
+        Returns (healthy, detail); detail is "invalid_token" on 401 so operators
+        can distinguish a revoked token from a network problem.
+        """
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
                 resp = await client.get(f"{self.base_url}/getMe")
-                return resp.status_code == 200
+                if resp.status_code == 200:
+                    return True, "ok"
+                if resp.status_code == 401:
+                    return False, "invalid_token"
+                return False, f"http_{resp.status_code}"
         except Exception:
-            return False
+            return False, "network_error"
 
     async def send_message(self, chat_id: str, text: str) -> str:
         """Send a text message to a chat. Returns message_id."""
@@ -275,5 +379,5 @@ class TelegramClient:
                     "Rate limited", retry_after=retry_after
                 )
             if resp.status_code != 200:
-                raise TelegramPermanentError(f"sendMessage failed: {resp.text}")
+                raise_for_status(resp, "send_message")
             return str(resp.json()["result"]["message_id"])

@@ -380,6 +380,110 @@ async def test_full_sync_flow(client: AsyncClient, mock_auth):
     assert resp_download.headers["content-type"] == "application/octet-stream"
 
 
+@pytest.mark.asyncio
+async def test_upload_rate_limit_halt_kill_switch(client: AsyncClient, mock_auth, monkeypatch):
+    """When TELEGRAM_RATE_LIMIT_HALT is on, a Telegram 429 halts the service."""
+    from app.halt import halt_requested, reset
+    from app.services.telegram import TelegramRateLimitError
+
+    user, session = mock_auth
+    session.register_db(user.id, "halt")
+    file_b64 = base64.b64encode(b"rate limited bytes").decode()
+
+    reset()
+    monkeypatch.setattr("app.config.settings.telegram_rate_limit_halt", True)
+    try:
+        with patch("app.routers.databases.TelegramClient") as MockTG, \
+             patch("app.halt.os.kill") as mock_kill:
+            MockTG.return_value.upload_file = AsyncMock(
+                side_effect=TelegramRateLimitError("Rate limited", retry_after=30)
+            )
+
+            resp = await client.post(
+                "/v1/upload",
+                json={"database_name": "halt", "file_data": file_b64},
+                headers={"X-API-Key": API_KEY},
+            )
+    finally:
+        monkeypatch.setattr("app.config.settings.telegram_rate_limit_halt", False)
+
+    assert resp.status_code == 503, f"Expected 503, got {resp.status_code} {resp.text}"
+    assert resp.json()["error"] == "service_stopping"
+    mock_kill.assert_called_once()
+    assert halt_requested() is True
+
+
+@pytest.mark.asyncio
+async def test_upload_rate_limit_without_kill_switch(client: AsyncClient, mock_auth, monkeypatch):
+    """With the switch off, a Telegram 429 keeps normal 429 handling."""
+    from app.services.telegram import TelegramRateLimitError
+
+    user, session = mock_auth
+    session.register_db(user.id, "soft429")
+    file_b64 = base64.b64encode(b"rate limited bytes").decode()
+
+    monkeypatch.setattr("app.config.settings.telegram_rate_limit_halt", False)
+    with patch("app.routers.databases.TelegramClient") as MockTG, \
+         patch("app.halt.os.kill") as mock_kill:
+        MockTG.return_value.upload_file = AsyncMock(
+            side_effect=TelegramRateLimitError("Rate limited", retry_after=15)
+        )
+
+        resp = await client.post(
+            "/v1/upload",
+            json={"database_name": "soft429", "file_data": file_b64},
+            headers={"X-API-Key": API_KEY},
+        )
+
+    assert resp.status_code == 429
+    assert resp.json() == {"error": "rate_limited", "retry_after": 15}
+    mock_kill.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_upload_telegram_401_maps_to_unauthorized(client: AsyncClient, mock_auth):
+    from app.services.telegram import TelegramUnauthorizedError
+
+    user, session = mock_auth
+    session.register_db(user.id, "unauth")
+    file_b64 = base64.b64encode(b"bytes").decode()
+
+    with patch("app.routers.databases.TelegramClient") as MockTG:
+        MockTG.return_value.upload_file = AsyncMock(
+            side_effect=TelegramUnauthorizedError("Unauthorized")
+        )
+        resp = await client.post(
+            "/v1/upload",
+            json={"database_name": "unauth", "file_data": file_b64},
+            headers={"X-API-Key": API_KEY},
+        )
+
+    assert resp.status_code == 503
+    assert resp.json()["error"] == "telegram_unauthorized"
+
+
+@pytest.mark.asyncio
+async def test_upload_telegram_5xx_maps_to_unavailable(client: AsyncClient, mock_auth):
+    from app.services.telegram import TelegramServerError
+
+    user, session = mock_auth
+    session.register_db(user.id, "servererr")
+    file_b64 = base64.b64encode(b"bytes").decode()
+
+    with patch("app.routers.databases.TelegramClient") as MockTG:
+        MockTG.return_value.upload_file = AsyncMock(
+            side_effect=TelegramServerError("Internal Server Error")
+        )
+        resp = await client.post(
+            "/v1/upload",
+            json={"database_name": "servererr", "file_data": file_b64},
+            headers={"X-API-Key": API_KEY},
+        )
+
+    assert resp.status_code == 502
+    assert resp.json()["error"] == "telegram_unavailable"
+
+
 # ── 2. Upload multiple versions, check /versions ───────────────────
 
 

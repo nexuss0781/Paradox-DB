@@ -5,10 +5,15 @@ database operation: register, upload, download, versions, rollback, status.
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from app.config import settings
-from app.services.telegram import TelegramClient, TelegramPermanentError
+from app.halt import maybe_halt_on_rate_limit
+from app.services.telegram import (
+    TelegramClient,
+    TelegramError,
+    TelegramRateLimitError,
+)
 
 logger = logging.getLogger("gateway.telegram_logger")
 
@@ -53,7 +58,7 @@ async def _resolve_channel() -> tuple[str, str]:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    return datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
 async def log_operation(
@@ -110,7 +115,11 @@ async def log_operation(
         try:
             result = await tg.send_message(cid, msg)
             logger.info("Logged [%s] to channel %s: msg_id=%s", action, cid, result)
-        except TelegramPermanentError as e:
+        except TelegramRateLimitError as e:
+            # A 429 means the bot is globally throttled — honor the kill switch.
+            maybe_halt_on_rate_limit(e, context=f"logging to channel {cid}")
+            logger.error("Telegram log rate-limited [%s]: %s", action, e)
+        except TelegramError as e:
             logger.error("Telegram log failed [%s]: %s", action, e)
         except Exception as e:
             logger.error("Log send failed [%s]: %s", action, e)

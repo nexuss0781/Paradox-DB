@@ -1,29 +1,80 @@
 """Databases CRUD + versions + diff + backup/restore + upload/download."""
 
+import base64
 import hashlib
 import time
 import uuid
-import base64
 from datetime import datetime
 
 import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
-from sqlalchemy import select, func, delete
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import get_current_user, rate_limiter
 from ..config import settings
 from ..database import get_db
+from ..halt import maybe_halt_on_rate_limit
 from ..models import (
-    User, Project, ParadoxDB, DatabaseVersion, DatabaseBackup, SyncLog,
-    DatabaseCreate, DatabaseUpdate, DatabaseResponse,
-    VersionResponse, BackupCreate, BackupResponse, DiffResponse,
+    BackupCreate,
+    BackupResponse,
+    DatabaseBackup,
+    DatabaseCreate,
+    DatabaseResponse,
+    DatabaseUpdate,
+    DatabaseVersion,
+    DiffResponse,
+    ParadoxDB,
+    Project,
+    SyncLog,
+    User,
+    VersionResponse,
 )
-from ..services.telegram import TelegramClient, TelegramRateLimitError
+from ..services.telegram import (
+    TelegramClient,
+    TelegramError,
+    TelegramRateLimitError,
+    TelegramServerError,
+    TelegramUnauthorizedError,
+)
 from ..telegram_logger import log_operation
 
 router = APIRouter(prefix="/v1", tags=["databases"])
+
+
+def _telegram_error_response(e: TelegramError) -> JSONResponse:
+    """Map a classified TelegramError to a client-facing response."""
+    if isinstance(e, TelegramRateLimitError):
+        if maybe_halt_on_rate_limit(e, context="telegram operation"):
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "error": "service_stopping",
+                    "detail": "Telegram rate limit triggered kill switch; service is halting",
+                },
+            )
+        return JSONResponse(
+            status_code=429,
+            content={"error": "rate_limited", "retry_after": e.retry_after},
+        )
+    if isinstance(e, TelegramUnauthorizedError):
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": "telegram_unauthorized",
+                "detail": f"Telegram bot token is invalid or revoked: {e}",
+            },
+        )
+    if isinstance(e, TelegramServerError):
+        return JSONResponse(
+            status_code=502,
+            content={"error": "telegram_unavailable", "detail": str(e)},
+        )
+    return JSONResponse(
+        status_code=502,
+        content={"error": "telegram_failed", "detail": str(e)},
+    )
 
 
 # ── Database CRUD ─────────────────────────────────────────────
@@ -410,6 +461,8 @@ async def restore_backup(
             channel_id=settings.telegram_storage_chat_id,
             message_id=ver.message_id,
         )
+    except TelegramError as e:
+        return _telegram_error_response(e)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to download from Telegram: {e}")
 
@@ -524,8 +577,8 @@ async def upload(
     version_type = body.get("version_type", "auto")
     client_version = body.get("version")
     encryption_key = body.get("encryption_key", "")
-    storage_chat_id = body.get("storage_chat_id", "")
-    log_chat_id = body.get("log_chat_id", "")
+    storage_chat_id = body.get("storage_chat_id", "") or body.get("storage_channel", "")
+    log_chat_id = body.get("log_chat_id", "") or body.get("log_channel", "")
 
     # Resolve database_id from project_id + name if needed
     if not database_id and project_id and database_name:
@@ -638,7 +691,9 @@ async def upload(
                 if idx == 0:
                     message_id = mid
         except TelegramRateLimitError as e:
-            return JSONResponse(status_code=429, content={"error": "rate_limited", "retry_after": e.retry_after})
+            return _telegram_error_response(e)
+        except TelegramError as e:
+            return _telegram_error_response(e)
         except Exception as e:
             return JSONResponse(status_code=502, content={"error": "telegram_failed", "detail": str(e)})
 
@@ -722,10 +777,17 @@ async def download(
     version: int | None = Query(default=None),
     encryption_key: str = Query(default=""),
     storage_chat_id: str = Query(default=""),
+    storage_channel: str = Query(default=""),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Download a database file. Accepts database_id or database_name (legacy)."""
+    """Download a database file. Accepts database_id or database_name (legacy).
+
+    The authoritative copy of every version is always read from the default
+    storage channel (where the recorded message IDs live). `storage_channel`/
+    `storage_chat_id` are accepted for API compatibility but ignored here —
+    custom channels only receive a mirrored copy on upload.
+    """
     # Resolve by name if no id provided
     if not database_id and database_name:
         result = await db.execute(
@@ -774,9 +836,11 @@ async def download(
     )
     try:
         file_bytes = await tg.download_file(
-            channel_id=storage_chat_id or settings.telegram_storage_chat_id,
+            channel_id=settings.telegram_storage_chat_id,
             message_id=message_id,
         )
+    except TelegramError as e:
+        return _telegram_error_response(e)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Telegram download failed: {e}")
 
@@ -908,9 +972,11 @@ async def legacy_rollback(
     )
     try:
         file_bytes = await tg.download_file(
-            channel_id=storage_chat_id or settings.telegram_storage_chat_id,
+            channel_id=settings.telegram_storage_chat_id,
             message_id=ver.message_id,
         )
+    except TelegramError as e:
+        return _telegram_error_response(e)
     except Exception as e:
         return JSONResponse(status_code=502, content={"error": "telegram_failed", "detail": str(e)})
 
@@ -935,6 +1001,8 @@ async def legacy_rollback(
             mid = await tg.upload_file(chat_id, file_bytes, caption)
             if idx == 0:
                 msg_id = mid
+    except TelegramError as e:
+        return _telegram_error_response(e)
     except Exception as e:
         return JSONResponse(status_code=502, content={"error": "telegram_upload_failed", "detail": str(e)})
 
