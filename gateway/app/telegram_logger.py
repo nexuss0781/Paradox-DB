@@ -56,8 +56,13 @@ def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
-async def log_operation(action: str, log: str, status: str = "info") -> None:
-    """Send a structured log entry to the storage channel.
+async def log_operation(
+    action: str,
+    log: str,
+    status: str = "info",
+    extra_chat_ids: list[str] | None = None,
+) -> None:
+    """Send a structured log entry to the system channel(s) plus any extra ones.
 
     Format:
         #Main_Channel_name: <channel name>
@@ -66,7 +71,13 @@ async def log_operation(action: str, log: str, status: str = "info") -> None:
         #log: <log details>
     """
     channel_id, channel_name = await _resolve_channel()
-    if not channel_id:
+    targets: list[str] = []
+    if channel_id:
+        targets.append(channel_id)
+    for cid in extra_chat_ids or []:
+        if cid and cid != channel_id:
+            targets.append(cid)
+    if not targets:
         logger.debug("No storage chat ID configured, skipping log")
         return
 
@@ -91,9 +102,15 @@ async def log_operation(action: str, log: str, status: str = "info") -> None:
             api_id=settings.telegram_api_id,
             api_hash=settings.telegram_api_hash,
         )
-        result = await tg.send_message(channel_id, msg)
-        logger.info("Logged [%s] to channel %s: msg_id=%s", action, channel_id, result)
-    except TelegramPermanentError as e:
-        logger.error("Telegram log failed [%s]: %s", action, e)
     except Exception as e:
-        logger.error("Log send failed [%s]: %s", action, e)
+        logger.error("Failed to init TelegramClient for logging: %s", e)
+        return
+
+    for cid in targets:
+        try:
+            result = await tg.send_message(cid, msg)
+            logger.info("Logged [%s] to channel %s: msg_id=%s", action, cid, result)
+        except TelegramPermanentError as e:
+            logger.error("Telegram log failed [%s]: %s", action, e)
+        except Exception as e:
+            logger.error("Log send failed [%s]: %s", action, e)

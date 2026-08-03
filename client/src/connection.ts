@@ -6,7 +6,6 @@ import { GatewayClient, GatewayError, isConnectivityError } from './gateway.js';
 import * as syncState from './state.js';
 import { configDir, loadConfig, saveConfig } from './config.js';
 import { encryptFile } from './crypto.js';
-import { DecryptionError } from './errors.js';
 
 export interface ParsedUrl {
   name: string;
@@ -110,6 +109,8 @@ export interface SyncDaemonOptions {
   projectId?: string;
   pushIntervalMs?: number;
   pullIntervalMs?: number;
+  storageChannel?: string;
+  logChannel?: string;
 }
 
 export class SyncDaemon {
@@ -121,6 +122,8 @@ export class SyncDaemon {
   private dbKey: string;
   private databaseId: string;
   private projectId: string;
+  private storageChannel: string;
+  private logChannel: string;
   private gateway: GatewayClient;
   private timer: ReturnType<typeof setInterval> | null = null;
   lastSync: number | null = null;
@@ -135,6 +138,8 @@ export class SyncDaemon {
     this.dbKey = dbStateKey(opts.dbName, opts.project || null);
     this.databaseId = opts.databaseId || '';
     this.projectId = opts.projectId || '';
+    this.storageChannel = opts.storageChannel || '';
+    this.logChannel = opts.logChannel || '';
     this.gateway = new GatewayClient(opts.gatewayUrl, opts.apiKey || '');
     if (opts.pushIntervalMs) this.PUSH_INTERVAL = opts.pushIntervalMs;
     if (opts.pullIntervalMs) this.PULL_INTERVAL = opts.pullIntervalMs;
@@ -227,6 +232,8 @@ export class SyncDaemon {
         project_id: this.projectId,
         file_bytes: raw,
         version: remoteVer,
+        storage_channel: this.storageChannel,
+        log_channel: this.logChannel,
       });
       this._onSuccess();
       syncState.setRemoteVersion(this.dbKey, resp.version, currentHash);
@@ -249,6 +256,8 @@ export class SyncDaemon {
             project_id: this.projectId,
             file_bytes: raw,
             version: remoteVer,
+            storage_channel: this.storageChannel,
+            log_channel: this.logChannel,
           });
           syncState.setRemoteVersion(this.dbKey, resp.version, currentHash);
           syncState.setLastLocalHash(this.dbKey, currentHash);
@@ -267,7 +276,7 @@ export class SyncDaemon {
 
   async pull(): Promise<boolean> {
     try {
-      const result = await this.gateway.download(this.dbName, undefined, this.databaseId, this.projectId);
+      const result = await this.gateway.download(this.dbName, undefined, this.databaseId, this.projectId, this.storageChannel);
       if (!result.bytes || result.bytes.length === 0) return false;
       const remoteHash = crypto.createHash('sha256').update(result.bytes).digest('hex');
       let currentHash = '';
@@ -324,6 +333,8 @@ export class ParadConnection {
   private projectId: string;
   private dbName: string;
   private _dbKey: string;
+  private storageChannel: string;
+  private logChannel: string;
   private _daemon: SyncDaemon | null = null;
   private _autoSync = false;
   private _pullOnStartup = false;
@@ -342,6 +353,8 @@ export class ParadConnection {
     pullOnStartup?: boolean;
     pushIntervalMs?: number;
     pullIntervalMs?: number;
+    storageChannel?: string;
+    logChannel?: string;
   }) {
     this.passphrase = opts.passphrase;
     this.gatewayUrl = opts.gatewayUrl;
@@ -349,6 +362,8 @@ export class ParadConnection {
     this.project = opts.project || null;
     this.databaseId = opts.databaseId || '';
     this.projectId = opts.projectId || '';
+    this.storageChannel = opts.storageChannel || '';
+    this.logChannel = opts.logChannel || '';
     this.dbName = opts.gatewayUrl ? path.basename(opts.dbPath).replace(/\.db$/, '') : '';
     this._dbKey = dbStateKey(this.dbName, this.project);
 
@@ -372,6 +387,8 @@ export class ParadConnection {
         projectId: this.projectId,
         pushIntervalMs: this._pushIntervalMs,
         pullIntervalMs: this._pullIntervalMs,
+        storageChannel: this.storageChannel,
+        logChannel: this.logChannel,
       });
       if (this._pullOnStartup) {
         try {
@@ -432,6 +449,8 @@ export class ParadConnection {
         project_id: this.projectId,
         file_bytes: raw,
         version: remoteVer,
+        storage_channel: this.storageChannel,
+        log_channel: this.logChannel,
       });
       const currentHash = crypto.createHash('sha256').update(raw).digest('hex');
       syncState.setRemoteVersion(this.dbKey, resp.version, currentHash);
@@ -449,6 +468,8 @@ export class ParadConnection {
           project_id: this.projectId,
           file_bytes: localRaw,
           version: newRemoteVer,
+          storage_channel: this.storageChannel,
+          log_channel: this.logChannel,
         });
         const currentHash = crypto.createHash('sha256').update(localRaw).digest('hex');
         syncState.setRemoteVersion(this.dbKey, resp.version, currentHash);
@@ -463,7 +484,7 @@ export class ParadConnection {
   async pull(): Promise<boolean> {
     if (!this.gatewayUrl) return false;
     const gw = new GatewayClient(this.gatewayUrl, this.apiKey);
-    const result = await gw.download(this.dbName, undefined, this.databaseId, this.projectId);
+    const result = await gw.download(this.dbName, undefined, this.databaseId, this.projectId, this.storageChannel);
     if (!result.bytes || result.bytes.length === 0) return false;
     const remoteHash = crypto.createHash('sha256').update(result.bytes).digest('hex');
     let currentHash = '';
@@ -489,7 +510,7 @@ export class ParadConnection {
   async pullVersion(version: number): Promise<boolean> {
     if (!this.gatewayUrl) return false;
     const gw = new GatewayClient(this.gatewayUrl, this.apiKey);
-    const result = await gw.download(this.dbName, version, this.databaseId, this.projectId);
+    const result = await gw.download(this.dbName, version, this.databaseId, this.projectId, this.storageChannel);
     if (!result.bytes || result.bytes.length === 0) return false;
     const remoteHash = crypto.createHash('sha256').update(result.bytes).digest('hex');
     this.engine.close();
@@ -546,6 +567,8 @@ export interface ConnectOptions {
   pullOnStartup?: boolean;
   pushIntervalMs?: number;
   pullIntervalMs?: number;
+  storageChannel?: string;
+  logChannel?: string;
 }
 
 export async function connect(opts: ConnectOptions | string): Promise<ParadConnection> {
@@ -692,6 +715,8 @@ export async function connect(opts: ConnectOptions | string): Promise<ParadConne
     pullOnStartup: (options.pullOnStartup ?? false) && Boolean(resolvedGateway),
     pushIntervalMs: options.pushIntervalMs,
     pullIntervalMs: options.pullIntervalMs,
+    storageChannel: options.storageChannel || process.env.PARADOX_STORAGE_CHANNEL || '',
+    logChannel: options.logChannel || process.env.PARADOX_LOG_CHANNEL || '',
   });
   await conn.init();
   return conn;

@@ -159,12 +159,16 @@ class SyncDaemon:
         project: str | None = None,
         database_id: str = "",
         project_id: str = "",
+        storage_channel: str = "",
+        log_channel: str = "",
     ):
         self._engine = engine
         self._db_name = db_name
         self._db_key = db_state_key(db_name, project)
         self._database_id = database_id
         self._project_id = project_id
+        self._storage_channel = storage_channel
+        self._log_channel = log_channel
         self._gateway = GatewayClient(gateway_url, api_key)
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -318,6 +322,8 @@ class SyncDaemon:
                 project_id=self._project_id,
                 file_bytes=raw,
                 version=remote_ver,
+                storage_chat_id=self._storage_channel,
+                log_chat_id=self._log_channel,
             )
             self._on_success()
             sync_state.set_remote_version(self._db_key, resp.version, current_hash)
@@ -344,6 +350,8 @@ class SyncDaemon:
                         project_id=self._project_id,
                         file_bytes=local_raw,
                         version=remote_ver,
+                        storage_chat_id=self._storage_channel,
+                        log_chat_id=self._log_channel,
                     )
                     # our bytes won — persist them locally so engine/disk
                     # reflect what was pushed (avoids a spurious re-push)
@@ -381,6 +389,7 @@ class SyncDaemon:
                 database_name=self._db_name,
                 database_id=self._database_id,
                 project_id=self._project_id,
+                storage_chat_id=self._storage_channel,
             )
         except Exception as exc:
             self._on_failure(exc)
@@ -453,6 +462,8 @@ class ParadConnection:
         database_id: str = "",
         project_id: str = "",
         pull_on_startup: bool = False,
+        storage_channel: str = "",
+        log_channel: str = "",
     ):
         self._db_path = str(Path(db_path).expanduser())
         self._passphrase = passphrase
@@ -461,6 +472,8 @@ class ParadConnection:
         self._project = project
         self._database_id = database_id
         self._project_id = project_id
+        self._storage_channel = storage_channel
+        self._log_channel = log_channel
         self._db_name = gateway_db_name(self._db_path) if self._gateway_url else ""
         self._db_key = db_state_key(self._db_name, project)
 
@@ -477,6 +490,8 @@ class ParadConnection:
                 project=project,
                 database_id=self._database_id,
                 project_id=self._project_id,
+                storage_channel=storage_channel,
+                log_channel=log_channel,
             )
             # Pull BEFORE the daemon thread starts so the engine
             # close/reopen cannot race the background loop (defect D).
@@ -554,6 +569,8 @@ class ParadConnection:
                 project_id=self._project_id,
                 file_bytes=raw,
                 version=remote_ver,
+                storage_chat_id=self._storage_channel,
+                log_chat_id=self._log_channel,
             )
         except GatewayError as exc:
             if exc.status_code != 409:
@@ -568,6 +585,8 @@ class ParadConnection:
                 project_id=self._project_id,
                 file_bytes=local_raw,
                 version=remote_ver,
+                storage_chat_id=self._storage_channel,
+                log_chat_id=self._log_channel,
             )
             self._apply_local(local_raw)
             raw = local_raw
@@ -604,6 +623,7 @@ class ParadConnection:
             database_name=self._db_name,
             database_id=self._database_id,
             project_id=self._project_id,
+            storage_chat_id=self._storage_channel,
         )
         if not result.bytes:
             return False
@@ -681,6 +701,8 @@ def connect(
     api_key: str | None = None,
     auto_sync: bool = True,
     pull_on_startup: bool = False,
+    storage_channel: str | None = None,
+    log_channel: str | None = None,
 ) -> ParadConnection:
     """Connect to a Parad database.
 
@@ -844,6 +866,8 @@ def connect(
         database_id=database_id,
         project_id=project_id,
         pull_on_startup=pull_on_startup and bool(resolved_gateway),
+        storage_channel=storage_channel or os.environ.get("PARADOX_STORAGE_CHANNEL", ""),
+        log_channel=log_channel or os.environ.get("PARADOX_LOG_CHANNEL", ""),
     )
 
     return conn

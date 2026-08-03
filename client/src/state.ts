@@ -4,6 +4,7 @@ import { configDir } from './config.js';
 
 // Characters unsafe in a filename segment. Multi-part keys like
 // "myproject/mydb" are flattened to "myproject__mydb".
+// eslint-disable-next-line no-control-regex -- U+0000–U+001F are intentionally blocked as filename-unsafe
 const UNSAFE_STATE_CHARS = /[/\\:*?"<>|\u0000-\u001f]/g;
 
 export function sanitizeStateKey(dbKey: string): string {

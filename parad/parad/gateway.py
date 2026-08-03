@@ -328,11 +328,16 @@ class GatewayClient:
         encryption_key: str = "",
         database_id: str = "",
         project_id: str = "",
+        storage_chat_id: str = "",
+        log_chat_id: str = "",
     ) -> UploadResponse:
         """Upload a database file to the gateway.
 
         Identify the target by ``database_id`` (+ optional ``project_id``)
         or fall back to the legacy ``database_name``.
+
+        ``storage_chat_id`` / ``log_chat_id`` are Telegram channel IDs the
+        database and operation log are additionally delivered to.
         """
         if file_bytes is None:
             raise ValueError("file_bytes is required")
@@ -350,6 +355,10 @@ class GatewayClient:
             payload["project_id"] = project_id
         if encryption_key:
             payload["encryption_key"] = encryption_key
+        if storage_chat_id:
+            payload["storage_chat_id"] = storage_chat_id
+        if log_chat_id:
+            payload["log_chat_id"] = log_chat_id
         resp = httpx.post(
             f"{self.gateway_url}/upload",
             json=payload,
@@ -360,11 +369,12 @@ class GatewayClient:
         self._check(resp)
         return UploadResponse(**resp.json())
 
-    def download(self, database_name: str = "", version: int | None = None, encryption_key: str = "", database_id: str = "", project_id: str = "") -> DownloadResult:
+    def download(self, database_name: str = "", version: int | None = None, encryption_key: str = "", database_id: str = "", project_id: str = "", storage_chat_id: str = "") -> DownloadResult:
         """Download a database file from the gateway.
 
         Prefer ``database_id`` when available; fall back to legacy
-        ``database_name``.
+        ``database_name``. ``storage_chat_id`` selects the Telegram channel
+        the database was stored in (defaults to the system channel).
         """
         params: dict = {}
         if database_id:
@@ -377,6 +387,8 @@ class GatewayClient:
             params["version"] = version
         if encryption_key:
             params["encryption_key"] = encryption_key
+        if storage_chat_id:
+            params["storage_chat_id"] = storage_chat_id
         resp = httpx.get(
             f"{self.gateway_url}/download",
             params=params,

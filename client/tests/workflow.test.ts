@@ -108,7 +108,6 @@ class MockGateway {
     let p = url.pathname;
     if (p.startsWith('/v1')) p = p.slice(3) || '/';
     const method = req.method || 'GET';
-    const s = this.store;
 
     let body: any = {};
     if (method === 'POST') {
