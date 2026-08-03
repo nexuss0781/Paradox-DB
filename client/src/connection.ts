@@ -5,7 +5,7 @@ import { ClientEngine } from './engine.js';
 import { GatewayClient, GatewayError, isConnectivityError } from './gateway.js';
 import * as syncState from './state.js';
 import { configDir, loadConfig, saveConfig } from './config.js';
-import { encryptFile } from './crypto.js';
+
 
 export interface ParsedUrl {
   name: string;
@@ -131,6 +131,7 @@ export class SyncDaemon {
   private _offline: boolean;
   private _consecutiveFailures = 0;
   private _lastError: string | null = null;
+  private _ticking = false;
 
   constructor(opts: SyncDaemonOptions) {
     this.engine = opts.engine;
@@ -148,11 +149,7 @@ export class SyncDaemon {
 
   start(): void {
     if (this.timer) return;
-    this.timer = setInterval(() => {
-      this._tick().catch(() => {
-        // never crash the host
-      });
-    }, 500);
+    this.timer = setInterval(() => this._onTick(), 500);
   }
 
   stop(): void {
@@ -160,6 +157,21 @@ export class SyncDaemon {
       clearInterval(this.timer);
       this.timer = null;
     }
+  }
+
+  private _onTick(): void {
+    // Never run ticks concurrently: a slow push (large upload, retries,
+    // offline backoff) must not let a second tick capture stale version
+    // state and start a duplicate push.
+    if (this._ticking) return;
+    this._ticking = true;
+    this._tick()
+      .catch(() => {
+        // never crash the host
+      })
+      .finally(() => {
+        this._ticking = false;
+      });
   }
 
   get isRunning(): boolean {
@@ -286,12 +298,8 @@ export class SyncDaemon {
         // ignore
       }
       if (remoteHash === currentHash) return false;
-      // close FIRST so the current in-memory state cannot re-encrypt over the new file
-      this.engine.close();
-      const encrypted = encryptFile(result.bytes, this.engine.passphrase);
-      fs.mkdirSync(path.dirname(this.engine.dbPath), { recursive: true });
-      fs.writeFileSync(this.engine.dbPath, encrypted);
-      await this.engine.open();
+      // Replace the local snapshot atomically and start clean (journal reset).
+      await this.engine.replaceBytes(result.bytes);
       if (result.version !== null && result.version !== undefined) {
         syncState.setRemoteVersion(this.dbKey, result.version, remoteHash);
       }
@@ -494,11 +502,7 @@ export class ParadConnection {
       // ignore
     }
     if (remoteHash === currentHash) return false;
-    this.engine.close();
-    const encrypted = encryptFile(result.bytes, this.passphrase);
-    fs.mkdirSync(path.dirname(this.engine.dbPath), { recursive: true });
-    fs.writeFileSync(this.engine.dbPath, encrypted);
-    await this.engine.open();
+    await this.engine.replaceBytes(result.bytes);
     if (result.version !== null && result.version !== undefined) {
       syncState.setRemoteVersion(this.dbKey, result.version, remoteHash);
     }
@@ -513,11 +517,7 @@ export class ParadConnection {
     const result = await gw.download(this.dbName, version, this.databaseId, this.projectId, this.storageChannel);
     if (!result.bytes || result.bytes.length === 0) return false;
     const remoteHash = crypto.createHash('sha256').update(result.bytes).digest('hex');
-    this.engine.close();
-    const encrypted = encryptFile(result.bytes, this.passphrase);
-    fs.mkdirSync(path.dirname(this.engine.dbPath), { recursive: true });
-    fs.writeFileSync(this.engine.dbPath, encrypted);
-    await this.engine.open();
+    await this.engine.replaceBytes(result.bytes);
     syncState.setRemoteVersion(this.dbKey, result.version ?? version, remoteHash);
     syncState.setLastLocalHash(this.dbKey, remoteHash);
     syncState.clearDirty(this.dbKey);

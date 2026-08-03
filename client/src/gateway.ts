@@ -1,7 +1,21 @@
 import { GatewayError } from './errors.js';
 export { GatewayError } from './errors.js';
 
-const COLD_START_TIMEOUT_MS = 30_000;
+const COLD_START_TIMEOUT_MS = 120_000;
+const MAX_REQUEST_ATTEMPTS = 3;
+const RETRY_BACKOFF_MS = [1_000, 4_000];
+
+function isRetryableNetworkError(err: unknown): boolean {
+  if ((err as { name?: string })?.name === 'TimeoutError') return true;
+  const code = (err as { code?: string })?.code;
+  if (code === 'ECONNREFUSED' || code === 'ECONNRESET' || code === 'ENOTFOUND' || code === 'ETIMEDOUT' || code === 'EAI_AGAIN') {
+    return true;
+  }
+  if (err instanceof TypeError && err.message.includes('fetch')) {
+    return true;
+  }
+  return false;
+}
 
 export interface UploadParams {
   database_name?: string;
@@ -98,20 +112,33 @@ export class GatewayClient {
     return h;
   }
 
+  private async fetchWithRetry(url: string, init: Parameters<typeof fetch>[1]): Promise<Response> {
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < MAX_REQUEST_ATTEMPTS; attempt++) {
+      if (attempt > 0) {
+        const delay = RETRY_BACKOFF_MS[attempt - 1] ?? RETRY_BACKOFF_MS[RETRY_BACKOFF_MS.length - 1];
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+      try {
+        return await fetch(url, { ...init, signal: AbortSignal.timeout(COLD_START_TIMEOUT_MS) });
+      } catch (err) {
+        lastErr = err;
+        if (!isRetryableNetworkError(err)) {
+          throw new GatewayError(0, err instanceof Error ? err.message : String(err));
+        }
+      }
+    }
+    throw new GatewayError(0, lastErr instanceof Error ? lastErr.message : String(lastErr));
+  }
+
   private async request<T>(method: 'GET' | 'POST', path: string, params?: URLSearchParams, body?: unknown): Promise<T> {
     const url = params ? `${this.gatewayUrl}${path}?${params.toString()}` : `${this.gatewayUrl}${path}`;
-    let resp: Response;
-    try {
-      resp = await fetch(url, {
-        method,
-        headers: this.headers(),
-        body: body !== undefined ? JSON.stringify(body) : undefined,
-        redirect: 'follow',
-        signal: AbortSignal.timeout(COLD_START_TIMEOUT_MS),
-      });
-    } catch (err) {
-      throw new GatewayError(0, err instanceof Error ? err.message : String(err));
-    }
+    const resp = await this.fetchWithRetry(url, {
+      method,
+      headers: this.headers(),
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      redirect: 'follow',
+    });
     if (resp.status >= 400) {
       let detail: unknown = null;
       try {
@@ -224,12 +251,11 @@ export class GatewayClient {
     if (storage_channel) params.set('storage_channel', storage_channel);
 
     const url = `${this.gatewayUrl}/download?${params.toString()}`;
-    let resp: Response;
-    try {
-      resp = await fetch(url, { method: 'GET', headers: this.headers(), redirect: 'follow', signal: AbortSignal.timeout(COLD_START_TIMEOUT_MS) });
-    } catch (err) {
-      throw new GatewayError(0, err instanceof Error ? err.message : String(err));
-    }
+    const resp = await this.fetchWithRetry(url, {
+      method: 'GET',
+      headers: this.headers(),
+      redirect: 'follow',
+    });
     if (resp.status >= 400) {
       let detail: unknown = null;
       try {
