@@ -241,13 +241,14 @@ def test_mint_api_key_rotates_and_invalidates_old():
 
 @skip_db
 def test_me_returns_current_user():
+    username = _unique("me_user")
     reg = client.post(
         "/v1/auth/register",
-        json={"email": _unique("me@example.com"), "username": _unique("me_user"), "password": "secret123"},
+        json={"email": _unique("me@example.com"), "username": username, "password": "secret123"},
     ).json()
     resp = client.get("/v1/auth/me", headers={"X-API-Key": reg["api_key"]})
     assert resp.status_code == 200
-    assert resp.json()["username"] == "me_user"
+    assert resp.json()["username"] == username
 
 
 # ── User scoping ──────────────────────────────────────────────────
