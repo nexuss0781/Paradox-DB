@@ -29,7 +29,7 @@ export function deriveKey(passphrase: string): Buffer {
 }
 
 /** Encrypt bytes with AES-256-CBC. Returns IV + ciphertext. */
-export function encryptFile(data: Buffer, passphrase: string): Buffer {
+export function encryptBytes(data: Buffer, passphrase: string): Buffer {
   const key = deriveKey(passphrase);
   const iv = randomBytes(IV_LENGTH);
   const padLen = 16 - (data.length % 16);
@@ -39,14 +39,19 @@ export function encryptFile(data: Buffer, passphrase: string): Buffer {
   return Buffer.concat([iv, ciphertext]);
 }
 
+/** Encrypt an SQLite database file (alias of encryptBytes, kept for clarity). */
+export function encryptFile(data: Buffer, passphrase: string): Buffer {
+  return encryptBytes(data, passphrase);
+}
+
 /**
  * Decrypt AES-256-CBC data (IV + ciphertext). Returns the original bytes.
  *
- * Throws DecryptionError on wrong passphrase, truncated/corrupt input,
- * invalid PKCS7 padding, or a payload that does not start with the
- * SQLite magic header.
+ * Throws DecryptionError on wrong passphrase, truncated/corrupt input, or
+ * invalid PKCS7 padding. Does NOT require a SQLite magic header — used for
+ * journal records.
  */
-export function decryptFile(data: Buffer, passphrase: string): Buffer {
+export function decryptBytes(data: Buffer, passphrase: string): Buffer {
   const key = deriveKey(passphrase);
   if (data.length < MIN_ENCRYPTED_LENGTH) {
     throw new DecryptionError(
@@ -78,13 +83,21 @@ export function decryptFile(data: Buffer, passphrase: string): Buffer {
       );
     }
   }
-  const plaintext = padded.subarray(0, padStart);
+  return Buffer.from(padded.subarray(0, padStart));
+}
+
+/**
+ * Decrypt an SQLite database file (IV + ciphertext). Same as decryptBytes but
+ * also enforces that the plaintext starts with the SQLite magic header.
+ */
+export function decryptFile(data: Buffer, passphrase: string): Buffer {
+  const plaintext = decryptBytes(data, passphrase);
   if (plaintext.length < SQLITE_MAGIC.length || !plaintext.subarray(0, SQLITE_MAGIC.length).equals(SQLITE_MAGIC)) {
     throw new DecryptionError(
       `${new DecryptionError().message}: not a SQLite database`,
     );
   }
-  return Buffer.from(plaintext);
+  return plaintext;
 }
 
 /** Return true if data decrypts with passphrase, false otherwise. Never throws. */
