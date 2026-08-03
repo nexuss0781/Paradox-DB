@@ -7,6 +7,7 @@ export interface ClientConfig {
     cipher: string;
     kdf_iterations: number;
     page_size: number;
+    passphrase: string;
   };
   sync: {
     gateway_url: string;

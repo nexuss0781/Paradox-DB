@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import secrets
+import sys
 import tempfile
 import threading
 import time
@@ -643,6 +645,33 @@ class ParadConnection:
 # ── Convenience factory ─────────────────────────────────────────
 
 
+def _announce_passphrase(passphrase: str, db_path: str) -> None:
+    """Print a newly generated passphrase once and persist it in ~/.paradox/.env."""
+    msg = (
+        "[parad] Generated a new encryption passphrase for "
+        f"'{db_path}': {passphrase}\n"
+        "[parad] It was saved to ~/.paradox/config.json and ~/.paradox/.env. "
+        "Keep it safe — it is NOT recoverable if lost, and it must match on "
+        "every machine sharing this database.\n"
+    )
+    try:
+        sys.stderr.write(msg)
+        sys.stderr.flush()
+    except Exception:
+        pass
+    try:
+        env_file = _config.config_dir() / ".env"
+        line = f'export PARADOX_PASSPHRASE="{passphrase}"\n'
+        if env_file.exists():
+            content = env_file.read_text()
+            if "PARADOX_PASSPHRASE=" not in content:
+                env_file.write_text(content.rstrip() + "\n" + line)
+        else:
+            env_file.write_text("# parad auto-generated encryption passphrase\n" + line)
+    except Exception:
+        pass
+
+
 def connect(
     name: str | None = None,
     passphrase: str | None = None,
@@ -674,7 +703,11 @@ def connect(
     2. If *name* is provided, derive *db_path* from ``~/.paradox/{name}.db``.
     3. If *db_path* is provided, use it directly.
     4. If no positional hints, fall back to config defaults.
-    5. Passphrase: explicit > parsed from URL > ``PARADOX_PASSPHRASE`` env > config > ``"default"``.
+    5. Passphrase: explicit > parsed from URL > ``PARADOX_PASSPHRASE`` env >
+       config > **auto-generated on first connect** (persisted to config +
+       ``~/.paradox/.env``, announced at the CLI). Existing DB files with no
+       configured passphrase keep the legacy ``"default"`` so they stay
+       readable.
     6. Gateway: explicit > parsed from URL > config.
     7. Auth token: explicit ``api_key`` arg > URL ``token`` param > userinfo
        token > ``email:password`` (auto-login) > config ``sync.api_key``.
@@ -714,7 +747,22 @@ def connect(
     if not resolved_passphrase:
         resolved_passphrase = os.environ.get("PARADOX_PASSPHRASE", "")
     if not resolved_passphrase:
-        resolved_passphrase = "default"
+        resolved_passphrase = cfg.encryption.passphrase or ""
+    if not resolved_passphrase:
+        # First-time connect: generate a strong passphrase, persist it, and
+        # surface it to the user (CLI notice + ~/.paradox/.env) so it can be reused
+        # on other machines. Never auto-generate for an existing DB file —
+        # that keeps legacy 'default'-encrypted databases readable.
+        if not os.path.exists(resolved_path):
+            resolved_passphrase = secrets.token_urlsafe(32)
+            try:
+                set_config_value("encryption.passphrase", resolved_passphrase)
+            except Exception:
+                pass
+            _announce_passphrase(resolved_passphrase, resolved_path)
+            cfg = load_config()
+        else:
+            resolved_passphrase = "default"
 
     # ── resolve gateway_url ─────────────────────────────────────
     resolved_gateway = gateway_url

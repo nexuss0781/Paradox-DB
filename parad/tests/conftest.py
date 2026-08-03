@@ -13,6 +13,8 @@ from pathlib import Path
 # tmp dir and re-imports config/state to pick it up.
 _HOME = tempfile.mkdtemp(prefix="paradox-test-home-")
 os.environ["PARADOX_HOME"] = _HOME
+# Auto-generated passphrase announce writes into the config dir (~/.paradox/.env)
+# which PARADOX_HOME already redirects to a pytest-managed temp dir.
 
 import pytest
 

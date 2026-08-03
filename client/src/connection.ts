@@ -506,6 +506,34 @@ export class ParadConnection {
 
 // ── Convenience factory ─────────────────────────────────────────
 
+function announcePassphrase(passphrase: string, dbPath: string): void {
+  const msg =
+    `[parad] Generated a new encryption passphrase for '${dbPath}': ${passphrase}\n` +
+    '[parad] It was saved to ~/.paradox/config.json and ~/.paradox/.env. ' +
+    'Keep it safe — it is NOT recoverable if lost, and it must match on every ' +
+    'machine sharing this database.\n';
+  try {
+    process.stderr.write(msg);
+  } catch {
+    // non-fatal
+  }
+  try {
+    fs.mkdirSync(configDir(), { recursive: true });
+    const envFile = path.join(configDir(), '.env');
+    const line = `export PARADOX_PASSPHRASE="${passphrase}"\n`;
+    if (fs.existsSync(envFile)) {
+      const content = fs.readFileSync(envFile, 'utf-8');
+      if (!content.includes('PARADOX_PASSPHRASE=')) {
+        fs.writeFileSync(envFile, content.replace(/\s*$/, '\n') + line, 'utf-8');
+      }
+    } else {
+      fs.writeFileSync(envFile, '# parad auto-generated encryption passphrase\n' + line, 'utf-8');
+    }
+  } catch {
+    // non-fatal
+  }
+}
+
 export interface ConnectOptions {
   name?: string;
   project?: string;
@@ -553,7 +581,26 @@ export async function connect(opts: ConnectOptions | string): Promise<ParadConne
   let resolvedPassphrase = options.passphrase || '';
   if (!resolvedPassphrase) resolvedPassphrase = parsedUrl?.passphrase || '';
   if (!resolvedPassphrase) resolvedPassphrase = process.env.PARADOX_PASSPHRASE || '';
-  if (!resolvedPassphrase) resolvedPassphrase = 'default';
+  if (!resolvedPassphrase) resolvedPassphrase = cfg.encryption.passphrase || '';
+  if (!resolvedPassphrase) {
+    // First-time connect: generate a strong passphrase, persist it, and
+    // surface it (CLI notice + ~/.paradox/.env) so it can be reused on other
+    // machines. Never auto-generate for an existing DB file — that keeps
+    // legacy 'default'-encrypted databases readable.
+    if (!fs.existsSync(resolvedPath)) {
+      resolvedPassphrase = crypto.randomBytes(32).toString('base64url');
+      try {
+        const c = loadConfig();
+        c.encryption.passphrase = resolvedPassphrase;
+        saveConfig(c);
+      } catch {
+        // non-fatal
+      }
+      announcePassphrase(resolvedPassphrase, resolvedPath);
+    } else {
+      resolvedPassphrase = 'default';
+    }
+  }
 
   // resolve gateway
   let resolvedGateway = options.gatewayUrl || '';

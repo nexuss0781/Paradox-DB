@@ -24,7 +24,7 @@ DEFAULT_CONFIG = {
         "cipher": "aes-256-cbc",
         "kdf_iterations": 256000,
         "page_size": 4096,
-        "passphrase": "default",
+        "passphrase": "",
     },
     "sync": {
         "gateway_url": "https://paradox-db.onrender.com/v1",
