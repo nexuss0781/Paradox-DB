@@ -16,11 +16,13 @@ def _postgres_available() -> bool:
     import asyncio
 
     from sqlalchemy import text
+    from sqlalchemy.ext.asyncio import create_async_engine
 
     from app.config import settings
-    from app.database import create_async_engine
+    from app.database_url import prepare_async_database_url
 
-    engine = create_async_engine(settings.database_url, connect_args={"timeout": 2})
+    database_url, connect_args = prepare_async_database_url(settings.database_url)
+    engine = create_async_engine(database_url, connect_args={"timeout": 2, **connect_args})
 
     async def _ping():
         try:
