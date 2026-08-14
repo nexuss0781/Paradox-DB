@@ -13,6 +13,15 @@ TypeScript SDK; the Python `parad` on PyPI is byte-compatible (same KDF/salt).
 - Gateway default: `https://paradox-db.onrender.com/v1`
 - Versioned sync; every upload = new immutable version; **local-wins on conflict**
 
+## Active gateway resolver
+
+ParadoxDB can move between deployment domains. Integrations should first read
+`https://paradox-domain.onrender.com/active-domain.json`, then use its
+`gatewayUrl` value as the active gateway base and cache it for `ttlSeconds`.
+The resolver is a public static discovery document only; it never contains an
+API key or passphrase. Configure its `gatewayUrl` as the gateway API base,
+including `/v1` when the deployment requires that path.
+
 ## Default workflow — use this first
 
 Auto-sync is on by default whenever a gateway is resolved. Don't hand-drive
