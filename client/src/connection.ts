@@ -527,6 +527,10 @@ export class ParadConnection {
 
 // ── Convenience factory ─────────────────────────────────────────
 
+export function generatePassphrase(): string {
+  return crypto.randomBytes(32).toString('base64url');
+}
+
 function announcePassphrase(passphrase: string, dbPath: string): void {
   const msg =
     `[parad] Generated a new encryption passphrase for '${dbPath}': ${passphrase}\n` +
@@ -569,6 +573,7 @@ export interface ConnectOptions {
   pullIntervalMs?: number;
   storageChannel?: string;
   logChannel?: string;
+  allowLegacyDefault?: boolean;
 }
 
 export async function connect(opts: ConnectOptions | string): Promise<ParadConnection> {
@@ -611,7 +616,7 @@ export async function connect(opts: ConnectOptions | string): Promise<ParadConne
     // machines. Never auto-generate for an existing DB file — that keeps
     // legacy 'default'-encrypted databases readable.
     if (!fs.existsSync(resolvedPath)) {
-      resolvedPassphrase = crypto.randomBytes(32).toString('base64url');
+      resolvedPassphrase = generatePassphrase();
       try {
         const c = loadConfig();
         c.encryption.passphrase = resolvedPassphrase;
@@ -620,8 +625,14 @@ export async function connect(opts: ConnectOptions | string): Promise<ParadConne
         // non-fatal
       }
       announcePassphrase(resolvedPassphrase, resolvedPath);
-    } else {
+    } else if (options.allowLegacyDefault) {
       resolvedPassphrase = 'default';
+    } else {
+      throw new Error(
+        `No passphrase configured for existing database '${resolvedPath}'. ` +
+        `Set PARADOX_PASSPHRASE or passphrase explicitly. ` +
+        `Use allowLegacyDefault: true only for legacy databases encrypted with 'default'.`,
+      );
     }
   }
 

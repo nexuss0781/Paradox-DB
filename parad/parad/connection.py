@@ -665,6 +665,11 @@ class ParadConnection:
 # ── Convenience factory ─────────────────────────────────────────
 
 
+def generate_passphrase() -> str:
+    """Generate a cryptographically random 256-bit database passphrase."""
+    return secrets.token_urlsafe(32)
+
+
 def _announce_passphrase(passphrase: str, db_path: str) -> None:
     """Print a newly generated passphrase once and persist it in ~/.paradox/.env."""
     msg = (
@@ -703,6 +708,7 @@ def connect(
     pull_on_startup: bool = False,
     storage_channel: str | None = None,
     log_channel: str | None = None,
+    allow_legacy_default: bool = False,
 ) -> ParadConnection:
     """Connect to a Parad database.
 
@@ -776,15 +782,21 @@ def connect(
         # on other machines. Never auto-generate for an existing DB file —
         # that keeps legacy 'default'-encrypted databases readable.
         if not os.path.exists(resolved_path):
-            resolved_passphrase = secrets.token_urlsafe(32)
+            resolved_passphrase = generate_passphrase()
             try:
                 set_config_value("encryption.passphrase", resolved_passphrase)
             except Exception:
                 pass
             _announce_passphrase(resolved_passphrase, resolved_path)
             cfg = load_config()
-        else:
+        elif allow_legacy_default:
             resolved_passphrase = "default"
+        else:
+            raise ValueError(
+                f"No passphrase configured for existing database '{resolved_path}'. "
+                "Set PARADOX_PASSPHRASE or passphrase explicitly. "
+                "Use allow_legacy_default=True only for legacy databases encrypted with 'default'."
+            )
 
     # ── resolve gateway_url ─────────────────────────────────────
     resolved_gateway = gateway_url
