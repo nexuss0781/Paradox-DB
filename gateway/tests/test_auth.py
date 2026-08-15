@@ -124,7 +124,7 @@ def test_register_issues_api_key():
     """POST /v1/auth/register returns user_id and a cloud-issued pk_ API key."""
     resp = client.post(
         "/v1/auth/register",
-        json={"email": _unique("alice@example.com"), "username": _unique("alice"), "password": "secret123"},
+        json={"email": _unique("alice@example.com"), "username": _unique("alice"), "password": "secret12345!"},
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -135,7 +135,7 @@ def test_register_issues_api_key():
 
 @skip_db
 def test_register_duplicate_email_409():
-    body = {"email": _unique("dup@example.com"), "username": _unique("dup1"), "password": "secret123"}
+    body = {"email": _unique("dup@example.com"), "username": _unique("dup1"), "password": "secret12345!"}
     assert client.post("/v1/auth/register", json=body).status_code == 200
     resp = client.post("/v1/auth/register", json=body)
     assert resp.status_code == 409
@@ -146,11 +146,11 @@ def test_login_issues_fresh_api_key():
     email = _unique("bob@example.com")
     client.post(
         "/v1/auth/register",
-        json={"email": email, "username": _unique("bob"), "password": "secret123"},
+        json={"email": email, "username": _unique("bob"), "password": "secret12345!"},
     )
     resp = client.post(
         "/v1/auth/login",
-        json={"email": email, "password": "secret123"},
+        json={"email": email, "password": "secret12345!"},
     )
     assert resp.status_code == 200
     assert resp.json()["api_key"].startswith("pk_")
@@ -158,22 +158,21 @@ def test_login_issues_fresh_api_key():
 
 
 @skip_db
-def test_login_rotates_and_invalidates_old_key():
+def test_login_issues_an_additional_active_key():
     email = _unique("roy@example.com")
     username = _unique("roy")
     reg = client.post(
         "/v1/auth/register",
-        json={"email": email, "username": username, "password": "secret123"},
+        json={"email": email, "username": username, "password": "secret12345!"},
     ).json()
     old_key = reg["api_key"]
     login = client.post(
         "/v1/auth/login",
-        json={"email": email, "password": "secret123"},
+        json={"email": email, "password": "secret12345!"},
     ).json()
     assert login["api_key"] != old_key
-    # Old key must be rejected
-    assert client.get("/v1/projects", headers={"X-API-Key": old_key}).status_code == 401
-    # Fresh key works
+    # Multiple devices may remain active; only explicit revocation invalidates a key.
+    assert client.get("/v1/projects", headers={"X-API-Key": old_key}).status_code == 200
     assert client.get("/v1/projects", headers={"X-API-Key": login["api_key"]}).status_code == 200
 
 
@@ -182,7 +181,7 @@ def test_login_invalid_password_401():
     email = _unique("carol@example.com")
     client.post(
         "/v1/auth/register",
-        json={"email": email, "username": _unique("carol"), "password": "secret123"},
+        json={"email": email, "username": _unique("carol"), "password": "secret12345!"},
     )
     resp = client.post(
         "/v1/auth/login",
@@ -209,7 +208,7 @@ def test_bearer_header_not_accepted():
     """Strict: an API key sent as Authorization: Bearer must be rejected."""
     reg = client.post(
         "/v1/auth/register",
-        json={"email": _unique("bear@example.com"), "username": _unique("bear"), "password": "secret123"},
+        json={"email": _unique("bear@example.com"), "username": _unique("bear"), "password": "secret12345!"},
     ).json()
     resp = client.get("/v1/projects", headers={"Authorization": f"Bearer {reg['api_key']}"})
     assert resp.status_code == 401
@@ -219,25 +218,24 @@ def test_bearer_header_not_accepted():
 def test_valid_api_key_passes_auth():
     reg = client.post(
         "/v1/auth/register",
-        json={"email": _unique("dave@example.com"), "username": _unique("dave"), "password": "secret123"},
+        json={"email": _unique("dave@example.com"), "username": _unique("dave"), "password": "secret12345!"},
     ).json()
     resp = client.get("/v1/projects", headers={"X-API-Key": reg["api_key"]})
     assert resp.status_code == 200
 
 
 @skip_db
-def test_mint_api_key_rotates_and_invalidates_old():
+def test_mint_api_key_creates_an_additional_key():
     reg = client.post(
         "/v1/auth/register",
-        json={"email": _unique("grace@example.com"), "username": _unique("grace"), "password": "secret123"},
+        json={"email": _unique("grace@example.com"), "username": _unique("grace"), "password": "secret12345!"},
     ).json()
     old_key = reg["api_key"]
     new = client.post("/v1/auth/api-key", headers={"X-API-Key": old_key}).json()
     assert new["api_key"].startswith("pk_")
     assert new["api_key"] != old_key
-    # Old key is invalidated
-    assert client.get("/v1/projects", headers={"X-API-Key": old_key}).status_code == 401
-    # New key works
+    # Old key remains valid until explicitly revoked.
+    assert client.get("/v1/projects", headers={"X-API-Key": old_key}).status_code == 200
     assert client.get("/v1/projects", headers={"X-API-Key": new["api_key"]}).status_code == 200
 
 
@@ -246,7 +244,7 @@ def test_me_returns_current_user():
     username = _unique("me_user")
     reg = client.post(
         "/v1/auth/register",
-        json={"email": _unique("me@example.com"), "username": username, "password": "secret123"},
+        json={"email": _unique("me@example.com"), "username": username, "password": "secret12345!"},
     ).json()
     resp = client.get("/v1/auth/me", headers={"X-API-Key": reg["api_key"]})
     assert resp.status_code == 200
@@ -260,11 +258,11 @@ def test_me_returns_current_user():
 def test_user_scoping():
     reg1 = client.post(
         "/v1/auth/register",
-        json={"email": _unique("u1@example.com"), "username": _unique("userone"), "password": "secret123"},
+        json={"email": _unique("u1@example.com"), "username": _unique("userone"), "password": "secret12345!"},
     ).json()
     reg2 = client.post(
         "/v1/auth/register",
-        json={"email": _unique("u2@example.com"), "username": _unique("usertwo"), "password": "secret123"},
+        json={"email": _unique("u2@example.com"), "username": _unique("usertwo"), "password": "secret12345!"},
     ).json()
 
     resp1 = client.get("/v1/projects", headers={"X-API-Key": reg1["api_key"]})
@@ -282,3 +280,14 @@ def test_user_model_has_api_key_hash():
     col = User.__table__.c.api_key_hash
     assert col is not None
     assert col.unique is True
+
+
+def test_password_policy_rejects_short_password():
+    from app.auth import validate_password
+    with pytest.raises(ValueError):
+        validate_password("short")
+
+
+def test_password_policy_accepts_strong_password():
+    from app.auth import validate_password
+    assert validate_password("correct horse battery staple!")

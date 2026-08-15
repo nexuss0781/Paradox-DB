@@ -56,6 +56,20 @@ async def init_db() -> None:
         await conn.execute(
             text("CREATE UNIQUE INDEX IF NOT EXISTS ux_users_api_key_hash ON users (api_key_hash)")
         )
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS api_keys (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                name VARCHAR(100) NOT NULL,
+                key_hash VARCHAR(64) NOT NULL UNIQUE,
+                created_at TIMESTAMP NOT NULL DEFAULT now(),
+                last_used_at TIMESTAMP NULL,
+                expires_at TIMESTAMP NULL,
+                revoked_at TIMESTAMP NULL
+            )
+        """))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_api_keys_user_id ON api_keys (user_id)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_api_keys_active_lookup ON api_keys (key_hash, revoked_at, expires_at)"))
 
 
 async def close_db() -> None:

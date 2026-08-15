@@ -11,6 +11,7 @@ from sqlalchemy import (
     String,
     Text,
 )
+from sqlalchemy.sql import func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
@@ -38,6 +39,22 @@ class User(Base):
     databases = relationship("ParadoxDB", back_populates="user", lazy="selectin", foreign_keys="ParadoxDB.user_id")
     sync_logs = relationship("SyncLog", back_populates="user", lazy="selectin")
     conflict_logs = relationship("ConflictLog", back_populates="user", lazy="selectin")
+    api_keys = relationship("APIKey", back_populates="user", cascade="all, delete-orphan", lazy="selectin")
+
+
+class APIKey(Base):
+    __tablename__ = "api_keys"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    name = Column(String(100), nullable=False)
+    key_hash = Column(String(64), unique=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    last_used_at = Column(DateTime, nullable=True)
+    expires_at = Column(DateTime, nullable=True)
+    revoked_at = Column(DateTime, nullable=True)
+
+    user = relationship("User", back_populates="api_keys")
 
 
 class Project(Base):
@@ -163,6 +180,21 @@ class AuthResponse(BaseModel):
     email: str
     username: str
     api_key: str
+
+
+class APIKeyCreateRequest(BaseModel):
+    name: str = "default"
+    expires_at: str | None = None
+
+
+class APIKeyResponse(BaseModel):
+    id: str
+    name: str
+    created_at: str
+    last_used_at: str | None
+    expires_at: str | None
+    revoked_at: str | None
+    api_key: str | None = None
 
 
 class UserResponse(BaseModel):
