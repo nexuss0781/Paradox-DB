@@ -5,6 +5,10 @@ description: Use when working with Paradox-DB or the `parad` package (TypeScript
 
 # Paradox-DB / `parad`
 
+## Mandatory Drizzle routing
+
+When a task mentions **Drizzle**, `drizzle-orm`, `parad/drizzle`, Drizzle schemas, Drizzle migrations, Drizzle queries, or TypeScript ORM compatibility, **read `Drizzle.md` in this directory before inspecting or modifying code**. Treat `Drizzle.md` as the AI execution guide for the Phase 2 adapter; use `client/docs/DRIZZLE.md` for the implementation reference and examples. Follow the guide’s connection, schema, transaction, lifecycle, testing, and reporting workflow exactly. Do not redesign the adapter or invent a second connection path when the requested work fits the documented API.
+
 Encrypted-at-rest SQLite with cloud sync. On-disk file is a single AES-256-CBC
 ciphertext blob (SQLite only exists decrypted in a temp file). `parad` is the
 TypeScript SDK; the Python `parad` on PyPI is byte-compatible (same KDF/salt).
