@@ -82,6 +82,10 @@ Connection strings: `parad://[token@ | email:pass@]local[/project]/<name>[?passp
 URL with a project ⇒ `connect` auto-provisions (ensureProject + ensureDatabase, idempotent)
 and persists resolved ids/credentials to `config.json`.
 
+## Recommended deployment setup
+
+For a newly provisioned database, use the complete URL returned by the successful CLI creation flow as the deployment secret `DATABASE_URL`. Let `connect()` consume it implicitly; pass an explicit URL or database name only when intentionally selecting a different database. Treat this URL as a bundled credential: use redacted CLI output for logs, print the full value only for secret-manager ingestion, and rotate the underlying API key or passphrase if the URL is exposed.
+
 ## Sync model
 
 - Daemon: tick 500 ms; push if local sha256 hash changed (min 2 s apart); pull at most every 30 s.
