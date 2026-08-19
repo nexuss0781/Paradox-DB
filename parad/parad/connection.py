@@ -106,6 +106,20 @@ def generate_url(
     return url
 
 
+def redact_url(url: str) -> str:
+    """Remove API-key, password, token, and passphrase material for display."""
+    parsed = urlparse(url)
+    userinfo = "<redacted>@" if parsed.username else ""
+    path = parsed.path
+    query = []
+    for key, values in parse_qs(parsed.query, keep_blank_values=True).items():
+        if key not in {"token", "passphrase"}:
+            for value in values:
+                query.append(f"{quote(key, safe='')}={quote(value, safe=':/')}")
+    suffix = f"?{'&'.join(query)}" if query else ""
+    return f"parad://{userinfo}{parsed.hostname or ''}{path}{suffix}"
+
+
 def db_state_key(name: str, project: str | None = None) -> str:
     """State-file key for a database.
 
@@ -474,7 +488,7 @@ class ParadConnection:
         self._project_id = project_id
         self._storage_channel = storage_channel
         self._log_channel = log_channel
-        self._db_name = gateway_db_name(self._db_path) if self._gateway_url else ""
+        self._db_name = gateway_db_name(self._db_path)
         self._db_key = db_state_key(self._db_name, project)
 
         self._engine = Engine(self._db_path, self._passphrase)
@@ -515,6 +529,17 @@ class ParadConnection:
     @property
     def is_connected(self) -> bool:
         return self._engine._conn is not None
+
+    @property
+    def database_url(self) -> str:
+        """Canonical connection URL for this resolved database."""
+        return generate_url(
+            self._db_name,
+            self._passphrase,
+            self._gateway_url,
+            self._project,
+            token=self._api_key,
+        )
 
     # ── SQL interface ───────────────────────────────────────────
 
@@ -751,10 +776,11 @@ def connect(
       Useful for web servers on ephemeral filesystems (Render, Heroku, etc.).
     """
     cfg = load_config()
+    configured_url = url or ((not name and not db_path) and (os.environ.get("DATABASE_URL") or cfg.database_url or "") or "")
     parsed_url: dict = {}
 
-    if url:
-        parsed_url = parse_url(url)
+    if configured_url:
+        parsed_url = parse_url(configured_url)
 
     url_name = parsed_url.get("name") or ""
     url_project = parsed_url.get("project") or None
@@ -881,5 +907,11 @@ def connect(
         storage_channel=storage_channel or os.environ.get("PARADOX_STORAGE_CHANNEL", ""),
         log_channel=log_channel or os.environ.get("PARADOX_LOG_CHANNEL", ""),
     )
+
+    try:
+        cfg.database_url = conn.database_url
+        save_config(cfg)
+    except Exception:
+        pass
 
     return conn

@@ -69,7 +69,7 @@ parad shell
 
 | Command | Description |
 |---|---|
-| `parad init <name>` | Create encrypted DB + register with gateway |
+| `parad init <name>` | Create encrypted DB + register with gateway; emit canonical DATABASE_URL |
 | `parad push` | Push database to Telegram cloud |
 | `parad pull [version]` | Pull latest or specific version |
 | `parad sync` | Push then pull |
@@ -84,12 +84,38 @@ parad shell
 | `parad shell` | Interactive SQL REPL |
 | `parad config show/set` | Manage config |
 
+## Canonical DATABASE_URL
+
+After `parad init` successfully provisions the project and database, Parad persists the complete connection URL in `config.json` as `database_url` and prints a redacted form:
+
+```bash
+parad init mydb --project myproject
+```
+
+Use `--print-database-url` only when intentionally copying the complete secret-bearing URL into a secret manager:
+
+```bash
+parad init mydb --project myproject --print-database-url
+```
+
+Applications can use the same single value:
+
+```python
+import os
+from parad import connect
+
+db = connect(url=os.environ["DATABASE_URL"])
+```
+
+An explicit `url`, `name`, or `db_path` argument takes precedence over an ambient `DATABASE_URL`. Existing connection strings and config-based workflows remain supported.
+
 ## Configuration
 
 Config lives at `~/.paradox/config.json`:
 
 ```json
 {
+  "database_url": "parad://<api-key>@local/project/mydb?gateway=https%3A%2F%2F...&passphrase=...",
   "database_path": "~/.paradox/data.db",
   "sync": {
     "gateway_url": "https://paradox-db.onrender.com/v1",

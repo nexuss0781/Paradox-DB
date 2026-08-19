@@ -34,6 +34,7 @@ class LoggingConfig(BaseModel):
 
 
 class Config(BaseModel):
+    database_url: str = ""
     database_path: str = "~/.paradox/data.db"
     project_id: str = ""
     project_name: str = ""

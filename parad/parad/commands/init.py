@@ -3,7 +3,7 @@
 import click
 from pathlib import Path
 from parad.config import load_config, save_config, config_dir, gateway_db_name, set_config_value
-from parad.connection import db_state_key
+from parad.connection import db_state_key, generate_url, redact_url
 from parad.engine import Engine
 from parad.gateway import GatewayClient, GatewayError
 from parad.state import set_remote_version, set_last_local_hash
@@ -93,7 +93,8 @@ def _find_or_create_database(gw, project_id: str, db_name: str) -> str:
 @click.option("--gateway", envvar="PARADOX_GATEWAY_URL", default=None)
 @click.option("--project", default=None, help="Project name to use (creates if not found)")
 @click.option("--watch", "do_watch", is_flag=True, help="Start auto-sync daemon after init")
-def init(name: str, passphrase: str, gateway: str | None, project: str | None, do_watch: bool):
+@click.option("--print-database-url", is_flag=True, help="Print the full secret-bearing DATABASE_URL")
+def init(name: str, passphrase: str, gateway: str | None, project: str | None, do_watch: bool, print_database_url: bool):
     """Create a new encrypted database and push to gateway.
 
     Handles everything in one step: auth, project/database setup, local DB creation, and push.
@@ -145,12 +146,21 @@ def init(name: str, passphrase: str, gateway: str | None, project: str | None, d
     except GatewayError as e:
         click.echo(f"⚠ Push failed: {e}")
 
-    # Step 6: Save config
+    # Step 6: Save config and publish the canonical URL only after creation succeeds.
+    canonical_url = generate_url(
+        name,
+        passphrase,
+        config.sync.gateway_url,
+        project_name,
+        token=config.sync.api_key,
+    )
+    config.database_url = canonical_url
     save_config(config)
 
     click.echo(f"\n✓ Database ready: {db_path}")
     click.echo(f"  Project:  {project_name} ({project_id})")
     click.echo(f"  Database: {name} ({database_id})")
+    click.echo(f"  DATABASE_URL: {canonical_url if print_database_url else redact_url(canonical_url)}")
 
     # Step 7: Optionally start daemon
     if do_watch:

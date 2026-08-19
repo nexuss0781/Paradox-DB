@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseUrl, generateUrl, dbStateKey } from '../src/connection.js';
+import { parseUrl, generateUrl, redactUrl, dbStateKey } from '../src/connection.js';
 import { GatewayError, isConnectivityError } from '../src/gateway.js';
 
 describe('parseUrl', () => {
@@ -82,6 +82,15 @@ describe('generateUrl', () => {
   it('omits query params that are empty', () => {
     const url = generateUrl('mydb');
     expect(url).toBe('parad://local/mydb');
+  });
+});
+
+describe('redactUrl', () => {
+  it('removes credentials while preserving the database target', () => {
+    const redacted = redactUrl('parad://token-abc@local/proj/mydb?gateway=https://g/v1&passphrase=secret');
+    expect(redacted).toBe('parad://%3Credacted%3E@local/proj/mydb?gateway=https%3A%2F%2Fg%2Fv1');
+    expect(redacted).not.toContain('token-abc');
+    expect(redacted).not.toContain('secret');
   });
 });
 

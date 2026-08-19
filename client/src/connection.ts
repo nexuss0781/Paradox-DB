@@ -97,6 +97,16 @@ export function dbStateKey(name: string, project: string | null = null): string 
   return name;
 }
 
+/** Remove credentials from a Parad URL before displaying it in normal CLI output. */
+export function redactUrl(url: string): string {
+  const parsed = new URL(url);
+  parsed.username = parsed.username ? '<redacted>' : '';
+  parsed.password = '';
+  parsed.searchParams.delete('token');
+  parsed.searchParams.delete('passphrase');
+  return parsed.toString();
+}
+
 // ── Sync daemon ─────────────────────────────────────────────────
 
 export interface SyncDaemonOptions {
@@ -372,7 +382,7 @@ export class ParadConnection {
     this.projectId = opts.projectId || '';
     this.storageChannel = opts.storageChannel || '';
     this.logChannel = opts.logChannel || '';
-    this.dbName = opts.gatewayUrl ? path.basename(opts.dbPath).replace(/\.db$/, '') : '';
+    this.dbName = path.basename(opts.dbPath).replace(/\.db$/, '');
     this._dbKey = dbStateKey(this.dbName, this.project);
 
     this.engine = new ClientEngine(opts.dbPath, opts.passphrase);
@@ -419,6 +429,11 @@ export class ParadConnection {
 
   get dbKey(): string {
     return this._dbKey;
+  }
+
+  /** Canonical connection URL for this successfully resolved database. */
+  get databaseUrl(): string {
+    return generateUrl(this.dbName, this.passphrase, this.gatewayUrl, this.project, this.apiKey);
   }
 
   execute(sql: string, params?: any[]): { rows: any[]; changes: number; lastInsertRowid: number } {
@@ -585,9 +600,10 @@ export async function connect(opts: ConnectOptions | string): Promise<ParadConne
   }
 
   const cfg = loadConfig();
+  const configuredUrl = options.url || ((!options.name && !options.dbPath) ? process.env.DATABASE_URL || cfg.database_url || '' : '');
   let parsedUrl: ParsedUrl | null = null;
-  if (options.url) {
-    parsedUrl = parseUrl(options.url);
+  if (configuredUrl) {
+    parsedUrl = parseUrl(configuredUrl);
   }
 
   const urlName = parsedUrl?.name || options.name || '';
@@ -730,5 +746,12 @@ export async function connect(opts: ConnectOptions | string): Promise<ParadConne
     logChannel: options.logChannel || process.env.PARADOX_LOG_CHANNEL || '',
   });
   await conn.init();
+  try {
+    const c = loadConfig();
+    c.database_url = conn.databaseUrl;
+    saveConfig(c);
+  } catch {
+    // non-fatal: the connection itself is ready even if config persistence fails
+  }
   return conn;
 }

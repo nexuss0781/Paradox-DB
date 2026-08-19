@@ -1,5 +1,21 @@
 # Connection Strings
 
+## Canonical `DATABASE_URL`
+
+After a successful project/database provisioning flow, Parad persists the resolved connection string as `database_url` in `~/.paradox/config.json`. The same value can be supplied through the `DATABASE_URL` environment variable and consumed by `connect()` with no additional connection arguments:
+
+```ts
+const db = await connect(process.env.DATABASE_URL!);
+```
+
+The CLI emits a redacted `DATABASE_URL` after successful `init` or `connect`. Use `--print-database-url` only when intentionally copying the complete secret-bearing URL into a secret manager:
+
+```text
+parad init mydb --project myproject --print-database-url
+```
+
+An explicit `url`, `name`, or `dbPath` argument takes precedence over an ambient `DATABASE_URL`. Existing `parad://`, `paradox://`, local-only, email/password, token, and config-based workflows remain supported.
+
 `parad` uses postgres-style connection strings to express everything needed to
 open a database in one line: *where it lives locally, who you are, and where to
 sync it*.
