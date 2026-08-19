@@ -29,6 +29,12 @@ dependencies = [
     "python-dotenv>=1.0",
 ]
 
+[project.optional-dependencies]
+sqlalchemy = ["SQLAlchemy>=2.0"]
+
+[project.entry-points."sqlalchemy.dialects"]
+parad = "parad.sqlalchemy:ParadDialect"
+
 [project.urls]
 Homepage = "https://github.com/nexuss0781/Paradox-DB"
 Repository = "https://github.com/nexuss0781/Paradox-DB"
