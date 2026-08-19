@@ -9,6 +9,10 @@ description: Use when working with Paradox-DB or the `parad` package (TypeScript
 
 When a task mentions **Drizzle**, `drizzle-orm`, `parad/drizzle`, Drizzle schemas, Drizzle migrations, Drizzle queries, or TypeScript ORM compatibility, **read `Drizzle.md` in this directory before inspecting or modifying code**. Treat `Drizzle.md` as the AI execution guide for the Phase 2 adapter; use `client/docs/DRIZZLE.md` for the implementation reference and examples. Follow the guide’s connection, schema, transaction, lifecycle, testing, and reporting workflow exactly. Do not redesign the adapter or invent a second connection path when the requested work fits the documented API.
 
+## Mandatory SQLAlchemy routing
+
+When a task mentions **SQLAlchemy**, `create_engine`, `Session`, SQLAlchemy models, Python ORM compatibility, DB-API, `parad.dbapi`, or the `parad://` SQLAlchemy dialect, **read `SQLAlchemy.md` in this directory before inspecting or modifying code**. Treat `SQLAlchemy.md` as the AI execution guide for the Phase 3 Python adapter; use `parad/docs/SQLALCHEMY.md` for the implementation reference and examples. Follow the guide’s authentication, `DATABASE_URL`, DB-API, engine, ORM, transaction, lifecycle, testing, and reporting workflow exactly. Do not create a second Python connection format or bypass the Parad engine when the documented API fits the task.
+
 Encrypted-at-rest SQLite with cloud sync. On-disk file is a single AES-256-CBC
 ciphertext blob (SQLite only exists decrypted in a temp file). `parad` is the
 TypeScript SDK; the Python `parad` on PyPI is byte-compatible (same KDF/salt).
