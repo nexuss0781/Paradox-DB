@@ -109,6 +109,10 @@ db = connect(url=os.environ["DATABASE_URL"])
 
 An explicit `url`, `name`, or `db_path` argument takes precedence over an ambient `DATABASE_URL`. Existing connection strings and config-based workflows remain supported.
 
+## SQLAlchemy
+
+Install the optional integration with `pip install "parad[sqlalchemy]"`, then use the same canonical URL with `create_engine("parad://...")`. The ORM, Core, DB-API, and encrypted lifecycle examples are documented in [`docs/SQLALCHEMY.md`](docs/SQLALCHEMY.md).
+
 ## Configuration
 
 Config lives at `~/.paradox/config.json`:
