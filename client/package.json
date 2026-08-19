@@ -5,6 +5,16 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./drizzle": {
+      "types": "./dist/drizzle.d.ts",
+      "import": "./dist/drizzle.js"
+    }
+  },
   "files": [
     "dist",
     "README.md"
@@ -30,10 +40,14 @@
   "dependencies": {
     "sql.js": "^1.14.1"
   },
+  "peerDependencies": {
+    "drizzle-orm": ">=0.40.0"
+  },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
     "@types/node": "^22.0.0",
     "@types/sql.js": "^1.4.11",
+    "drizzle-orm": "^0.45.2",
     "@typescript-eslint/eslint-plugin": "^8.0.0",
     "@typescript-eslint/parser": "^8.0.0",
     "eslint": "^9.0.0",
