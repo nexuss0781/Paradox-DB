@@ -22,7 +22,71 @@ The resolver is a public static discovery document only; it never contains an
 API key or passphrase. Configure its `gatewayUrl` as the gateway API base,
 including `/v1` when the deployment requires that path.
 
-## Default workflow — use this first
+## Priority workflow — authenticate, provision, then connect
+
+Follow this sequence for a new application or deployment. **Do not attempt database operations before authentication succeeds.**
+
+### 1. Resolve the active gateway
+
+Read the active-domain document described above and use its `gatewayUrl`. If the resolver is unavailable, use the documented default gateway.
+
+### 2. Authenticate
+
+Reuse a configured API key when `PARADOX_API_KEY` or `config.sync.api_key` is already present. Otherwise register an account once, then log in:
+
+```bash
+parad auth register
+parad auth login
+```
+
+For non-interactive applications, provide the API key through the environment or secret manager. The gateway receives it as `X-API-Key`; never substitute an `Authorization: Bearer` header.
+
+### 3. Create or resolve the project and database
+
+Run the initialization flow with the desired project and database names:
+
+```bash
+parad init <database-name> --project <project-name>
+```
+
+`init` authenticates using the configured credentials, creates the project if absent, creates the database if absent, creates the encrypted local file, and pushes the initial snapshot. Treat any failed step as a failed setup; do not publish a connection URL from a partial result.
+
+The equivalent SDK operation is a project-scoped connection. It performs `ensureProject` followed by `ensureDatabase` idempotently:
+
+```ts
+const db = await connect({
+  project: 'myproject',
+  name: 'mydb',
+  apiKey: process.env.PARADOX_API_KEY,
+});
+```
+
+### 4. Capture the canonical connection URL
+
+Only after provisioning succeeds, obtain the complete URL:
+
+```bash
+parad init <database-name> --project <project-name> --print-database-url
+```
+
+Store that value as the single deployment secret `DATABASE_URL`. Normal CLI output is redacted; never paste the full value into logs, source code, or issue reports.
+
+### 5. Use the database
+
+Applications can now connect with only the canonical URL:
+
+```ts
+const db = await connect(process.env.DATABASE_URL!);
+```
+
+```python
+from parad import connect
+import os
+
+db = connect(url=os.environ['DATABASE_URL'])
+```
+
+## Use an existing database after provisioning
 
 Auto-sync is on by default whenever a gateway is resolved. Don't hand-drive
 sync unless it fails.
@@ -84,7 +148,7 @@ and persists resolved ids/credentials to `config.json`.
 
 ## Recommended deployment setup
 
-For a newly provisioned database, use the complete URL returned by the successful CLI creation flow as the deployment secret `DATABASE_URL`. Let `connect()` consume it implicitly; pass an explicit URL or database name only when intentionally selecting a different database. Treat this URL as a bundled credential: use redacted CLI output for logs, print the full value only for secret-manager ingestion, and rotate the underlying API key or passphrase if the URL is exposed.
+Use the canonical URL produced by step 4 as the only deployment database secret. Treat it as a bundled credential and rotate the underlying API key or passphrase if it is exposed.
 
 ## Sync model
 
