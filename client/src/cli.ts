@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import * as path from 'node:path';
 import * as readline from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
-import { connect } from './connection.js';
+import { connect, redactUrl } from './connection.js';
 import { GatewayClient } from './gateway.js';
 import { loadConfig, saveConfig } from './config.js';
 import * as state from './state.js';
@@ -38,6 +38,7 @@ Commands:
   shell                    Interactive REPL
   --help, -h               Show this help
   --version, -v            Show version
+  --print-database-url     Print the full secret-bearing DATABASE_URL
 `);
 }
 
@@ -67,7 +68,13 @@ function output(data: unknown, jsonMode: boolean): void {
 }
 
 const jsonMode = args.includes('--json');
-const cleanArgs = args.filter((a) => a !== '--json');
+const printDatabaseUrl = args.includes('--print-database-url');
+const cleanArgs = args.filter((a) => a !== '--json' && a !== '--print-database-url');
+
+function displayedDatabaseUrl(url: string): string {
+  return printDatabaseUrl ? url : redactUrl(url);
+}
+
 
 async function main(): Promise<void> {
   switch (command) {
@@ -80,7 +87,7 @@ async function main(): Promise<void> {
       const conn = await connect({ name, autoSync: false });
       conn.execute('CREATE TABLE IF NOT EXISTS _meta (key TEXT PRIMARY KEY, value TEXT)');
       conn.close();
-      output({ status: 'created', name, path: conn.engine.dbPath }, jsonMode);
+      output({ status: 'created', name, path: conn.engine.dbPath, database_url: displayedDatabaseUrl(conn.databaseUrl) }, jsonMode);
       break;
     }
     case 'connect': {
@@ -90,7 +97,7 @@ async function main(): Promise<void> {
         process.exit(1);
       }
       const conn = await connect({ url, autoSync: false });
-      output({ status: 'connected', name: conn.dbKey, path: conn.engine.dbPath }, jsonMode);
+      output({ status: 'connected', name: conn.dbKey, path: conn.engine.dbPath, database_url: displayedDatabaseUrl(conn.databaseUrl) }, jsonMode);
       conn.close();
       break;
     }

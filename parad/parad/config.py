@@ -19,6 +19,7 @@ def config_dir() -> Path:
     return Path(os.environ.get("PARADOX_HOME", "~/.paradox")).expanduser()
 
 DEFAULT_CONFIG = {
+    "database_url": "",
     "database_path": "~/.paradox/data.db",
     "encryption": {
         "cipher": "aes-256-cbc",
@@ -73,6 +74,7 @@ def load_config() -> Config:
     - PARADOX_GATEWAY    → sync.gateway_url
     - PARADOX_DATABASE   → database_path
     - PARADOX_API_KEY    → sync.api_key
+    - DATABASE_URL       → canonical Parad connection URL
 
     .env files are loaded automatically if python-dotenv is installed.
     """
@@ -95,6 +97,8 @@ def load_config() -> Config:
         merged["database_path"] = os.environ["PARADOX_DATABASE"]
     if "PARADOX_API_KEY" in os.environ:
         merged["sync"]["api_key"] = os.environ["PARADOX_API_KEY"]
+    if "DATABASE_URL" in os.environ:
+        merged["database_url"] = os.environ["DATABASE_URL"]
 
     return Config(**merged)
 
@@ -142,9 +146,9 @@ def get_passphrase() -> str:
 
 
 def get_connection_url(name: str) -> str:
-    """Get a connection URL for a database.
-    
-    Returns: parad://local/{name}?passphrase={passphrase}
-    """
+    """Get the canonical connection URL, with a legacy local fallback."""
+    config = load_config()
+    if config.database_url and gateway_db_name(config.database_path) == name:
+        return config.database_url
     passphrase = get_passphrase()
     return f"parad://local/{name}?passphrase={passphrase}"
