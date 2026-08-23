@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth import get_current_user, rate_limiter
 from ..config import settings
+from ..connection_url import decrypt_database_url, encrypt_database_url, redact_database_url, validate_database_url
 from ..database import get_db
 from ..halt import maybe_halt_on_rate_limit
 from ..models import (
@@ -23,6 +24,8 @@ from ..models import (
     DatabaseCreate,
     DatabaseResponse,
     DatabaseUpdate,
+    DatabaseUrlResponse,
+    DatabaseUrlWrite,
     DatabaseVersion,
     DiffResponse,
     ParadoxDB,
@@ -104,6 +107,7 @@ async def list_databases(
             id=str(d.id), project_id=str(d.project_id), name=d.name,
             description=d.description, latest_version=d.latest_version,
             file_hash=d.file_hash,
+            has_database_url=bool(d.database_url_encrypted),
             created_at=d.created_at.isoformat() if d.created_at else "",
             updated_at=d.updated_at.isoformat() if d.updated_at else "",
         )
@@ -140,6 +144,7 @@ async def create_database(
     return DatabaseResponse(
         id=str(paradox_db.id), project_id=str(paradox_db.project_id), name=paradox_db.name,
         description=paradox_db.description, latest_version=0, file_hash=None,
+        has_database_url=False,
         created_at=paradox_db.created_at.isoformat(),
         updated_at=paradox_db.updated_at.isoformat(),
     )
@@ -163,8 +168,90 @@ async def get_database(
         id=str(paradox_db.id), project_id=str(paradox_db.project_id), name=paradox_db.name,
         description=paradox_db.description, latest_version=paradox_db.latest_version,
         file_hash=paradox_db.file_hash,
+        has_database_url=bool(paradox_db.database_url_encrypted),
         created_at=paradox_db.created_at.isoformat() if paradox_db.created_at else "",
         updated_at=paradox_db.updated_at.isoformat() if paradox_db.updated_at else "",
+    )
+
+
+@router.get("/databases/{database_id}/connection-url", response_model=DatabaseUrlResponse)
+async def get_database_connection_url(
+    database_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return redacted canonical URL metadata for an owned database."""
+    result = await db.execute(
+        select(ParadoxDB).where(ParadoxDB.id == database_id, ParadoxDB.user_id == user.id)
+    )
+    paradox_db = result.scalar_one_or_none()
+    if not paradox_db:
+        raise HTTPException(status_code=404, detail="Database not found")
+    try:
+        stored = decrypt_database_url(paradox_db.database_url_encrypted)
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return DatabaseUrlResponse(
+        database_id=str(paradox_db.id),
+        database_url=redact_database_url(stored),
+        configured=stored is not None,
+        redacted=True,
+    )
+
+
+@router.put("/databases/{database_id}/connection-url", response_model=DatabaseUrlResponse)
+async def set_database_connection_url(
+    database_id: str,
+    body: DatabaseUrlWrite,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Store an owned database's canonical URL encrypted at rest."""
+    result = await db.execute(
+        select(ParadoxDB).where(ParadoxDB.id == database_id, ParadoxDB.user_id == user.id)
+    )
+    paradox_db = result.scalar_one_or_none()
+    if not paradox_db:
+        raise HTTPException(status_code=404, detail="Database not found")
+    try:
+        normalized = validate_database_url(body.database_url)
+        paradox_db.database_url_encrypted = encrypt_database_url(normalized)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    paradox_db.updated_at = datetime.utcnow()
+    await db.flush()
+    return DatabaseUrlResponse(
+        database_id=str(paradox_db.id),
+        database_url=redact_database_url(normalized),
+        configured=True,
+        redacted=True,
+    )
+
+
+@router.post("/databases/{database_id}/connection-url/reveal", response_model=DatabaseUrlResponse)
+async def reveal_database_connection_url(
+    database_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Reveal an owned canonical URL only after an explicit authenticated action."""
+    result = await db.execute(
+        select(ParadoxDB).where(ParadoxDB.id == database_id, ParadoxDB.user_id == user.id)
+    )
+    paradox_db = result.scalar_one_or_none()
+    if not paradox_db:
+        raise HTTPException(status_code=404, detail="Database not found")
+    try:
+        stored = decrypt_database_url(paradox_db.database_url_encrypted)
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    if not stored:
+        raise HTTPException(status_code=404, detail="Canonical database_url is not configured")
+    return DatabaseUrlResponse(
+        database_id=str(paradox_db.id),
+        database_url=stored,
+        configured=True,
+        redacted=False,
     )
 
 
@@ -194,6 +281,7 @@ async def update_database(
         id=str(paradox_db.id), project_id=str(paradox_db.project_id), name=paradox_db.name,
         description=paradox_db.description, latest_version=paradox_db.latest_version,
         file_hash=paradox_db.file_hash,
+        has_database_url=bool(paradox_db.database_url_encrypted),
         created_at=paradox_db.created_at.isoformat() if paradox_db.created_at else "",
         updated_at=paradox_db.updated_at.isoformat() if paradox_db.updated_at else "",
     )

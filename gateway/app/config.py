@@ -11,6 +11,10 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/paradox_registry"
     redis_url: str = "redis://localhost:6379/0"
     api_key_salt: str = "change-me-in-production"
+    jwt_secret: str = "change-me-in-production"
+    # Base64 Fernet key for encrypting canonical database_url metadata.
+    # If empty, the implementation derives a stable key from JWT_SECRET.
+    database_url_encryption_key: str = ""
     max_upload_size_mb: int = 50
     rate_limit_uploads_per_minute: int = 15
     lock_timeout_seconds: int = 30

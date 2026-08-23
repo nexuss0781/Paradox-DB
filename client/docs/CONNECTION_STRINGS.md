@@ -2,13 +2,13 @@
 
 ## Canonical `DATABASE_URL` first
 
-Use one canonical connection value for new applications and deployments. After provisioning, Parad persists it as `database_url` in `~/.paradox/config.json`; the same value can be supplied through the `DATABASE_URL` environment variable:
+Use one canonical connection value for new applications and deployments. After project-scoped provisioning, Parad registers it with the gateway, which stores `database_url` encrypted at rest on the server. Parad also persists a local copy in `~/.paradox/config.json`; the same value can be supplied through the `DATABASE_URL` environment variable:
 
 ```ts
 const db = await connect(process.env.DATABASE_URL!);
 ```
 
-Retrieve the configured value without opening or mutating the remote database:
+Retrieve the configured value. The CLI checks local values first, then performs read-only owner-authenticated server recovery through the gateway, and finally falls back to legacy split fields:
 
 ```bash
 parad url
@@ -25,7 +25,15 @@ parad auth login
 parad init mydb --project myproject --print-database-url
 ```
 
-Retrieval checks `DATABASE_URL`, then persisted `config.database_url`, then reconstructs and persists a canonical URL from legacy split settings when sufficient. If an existing database has no recoverable passphrase, the command stops instead of generating a replacement or overwriting remote data.
+Retrieval checks `DATABASE_URL`, then persisted `config.database_url`, then server recovery, then reconstructs and persists a canonical URL from legacy split settings when sufficient. Server recovery calls the explicit reveal endpoint and persists the returned value locally. If the server has no stored URL and local legacy fields lack a passphrase, the command stops instead of generating a replacement or overwriting remote data.
+
+For a database created before server URL storage existed, register a canonical URL that you already know:
+
+```bash
+parad url register 'parad://...'
+```
+
+This explicit migration command validates the URL and updates only the encrypted server URL field. It does not initialize, push, pull, or overwrite database snapshots. A historical URL that was never registered cannot be reconstructed from server metadata.
 
 An explicit `url` argument remains strongest. Explicit `name` or `dbPath` options are preserved for legacy applications and intentionally select a legacy target. Existing `parad://`, `paradox://`, local-only, email/password, token, and config-based workflows remain supported.
 
@@ -113,6 +121,19 @@ await connect('parad://local/todos'); // uses saved api_key + gateway
 
 ---
 
+## Programmatic registration
+
+```ts
+import { registerCanonicalDatabaseUrl } from 'parad';
+
+// Explicit migration for a pre-feature database; no snapshot operation occurs.
+await registerCanonicalDatabaseUrl(process.env.DATABASE_URL!);
+```
+
+## Server-side canonical URL storage
+
+The gateway stores the canonical URL encrypted at rest in the `paradox_dbs.database_url_encrypted` field. Set a stable `DATABASE_URL_ENCRYPTION_KEY` on the gateway; never store the plaintext URL in the database or expose it in ordinary metadata responses. `GET /databases/{database_id}/connection-url` is redacted, while `POST /databases/{database_id}/connection-url/reveal` is explicit and owner-authenticated.
+
 ## Encryption passphrase
 
 The passphrase comes from the URL's `?passphrase=` parameter, an explicit
@@ -123,8 +144,7 @@ none are provided — the string `default`.
 parad://local/todos?passphrase=hunter2
 ```
 
-> The passphrase only ever lives client-side. The gateway never sees it; it
-> receives the fully encrypted bytes.
+> The local database encryption passphrase remains client-side for database contents. The canonical connection URL is a separate owner secret: it is sent to the gateway only during explicit registration and is encrypted at rest with the gateway deployment key.
 
 ---
 

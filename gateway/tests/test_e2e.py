@@ -35,6 +35,7 @@ with patch("app.main.init_db", new_callable=AsyncMock), \
     pass
 
 import httpx
+from cryptography.fernet import Fernet
 import pytest
 from fastapi import Request
 from httpx import ASGITransport, AsyncClient
@@ -97,6 +98,7 @@ def _mock_paradox_db(
     pdb.latest_version = latest_version
     pdb.latest_message_id = latest_message_id
     pdb.file_hash = file_hash
+    pdb.database_url_encrypted = None
     pdb.created_at = datetime.now(timezone.utc)
     pdb.updated_at = datetime.now(timezone.utc)
     return pdb
@@ -218,7 +220,7 @@ class _E2EMockSession:
             # Try match by db_id
             if db_id:
                 for pdb in self._paradox_dbs.values():
-                    if str(pdb.id) == str(db_id):
+                    if str(pdb.id) == str(db_id) and (not user_id or str(pdb.user_id) == str(user_id)):
                         return _make_mock_result(scalar_one=pdb)
                 return _make_mock_result(scalar_one=None)
             # Try match by user_id + name
@@ -337,6 +339,99 @@ def mock_redis_and_rate_limit():
         mock_lock.release = AsyncMock()
         mock_rl.check = MagicMock(return_value=True)
         yield mock_lock, mock_rl
+
+
+# ── Canonical URL storage and recovery ──────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_connection_url_owner_storage_redaction_and_reveal(client: AsyncClient, mock_auth, monkeypatch):
+    user, session = mock_auth
+    database = session.register_db(user.id, "connection")
+    monkeypatch.setattr("app.config.settings.database_url_encryption_key", Fernet.generate_key().decode())
+    canonical = "parad://owner-secret@local/e2e_project/connection?passphrase=secret&gateway=https://g/v1"
+
+    stored = await client.put(
+        f"/v1/databases/{database.id}/connection-url",
+        json={"database_url": canonical},
+        headers={"X-API-Key": API_KEY},
+    )
+    assert stored.status_code == 200
+    assert stored.json()["configured"] is True
+    assert stored.json()["redacted"] is True
+    assert "owner-secret" not in stored.text
+    assert "secret" not in stored.text
+    assert database.database_url_encrypted
+    assert canonical not in database.database_url_encrypted
+
+    metadata = await client.get(
+        f"/v1/databases/{database.id}/connection-url",
+        headers={"X-API-Key": API_KEY},
+    )
+    assert metadata.status_code == 200
+    assert metadata.json()["configured"] is True
+    assert metadata.json()["redacted"] is True
+    assert "owner-secret" not in metadata.text
+    assert "secret" not in metadata.text
+
+    revealed = await client.post(
+        f"/v1/databases/{database.id}/connection-url/reveal",
+        headers={"X-API-Key": API_KEY},
+    )
+    assert revealed.status_code == 200
+    assert revealed.json() == {
+        "database_id": str(database.id),
+        "database_url": canonical,
+        "configured": True,
+        "redacted": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_connection_url_rejects_invalid_scheme_and_unknown_database(client: AsyncClient, mock_auth, monkeypatch):
+    user, session = mock_auth
+    database = session.register_db(user.id, "connection-invalid")
+    monkeypatch.setattr("app.config.settings.database_url_encryption_key", Fernet.generate_key().decode())
+
+    invalid = await client.put(
+        f"/v1/databases/{database.id}/connection-url",
+        json={"database_url": "postgres://host/db"},
+        headers={"X-API-Key": API_KEY},
+    )
+    assert invalid.status_code == 422
+
+    unknown = await client.post(
+        f"/v1/databases/{uuid.uuid4()}/connection-url/reveal",
+        headers={"X-API-Key": API_KEY},
+    )
+    assert unknown.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_connection_url_reveal_is_owner_scoped(client: AsyncClient, mock_auth, monkeypatch):
+    user, session = mock_auth
+    database = session.register_db(user.id, "private-connection")
+    monkeypatch.setattr("app.config.settings.database_url_encryption_key", Fernet.generate_key().decode())
+    canonical = "parad://owner-secret@local/e2e_project/private-connection?passphrase=secret"
+    await client.put(
+        f"/v1/databases/{database.id}/connection-url",
+        json={"database_url": canonical},
+        headers={"X-API-Key": API_KEY},
+    )
+
+    foreign_user = _mock_user()
+    foreign_user.id = uuid.UUID("00000000-0000-0000-0000-000000000099")
+
+    async def _foreign_user(request: Request):
+        return foreign_user
+
+    app.dependency_overrides[get_current_user] = _foreign_user
+    app.middleware_stack = None
+    response = await client.post(
+        f"/v1/databases/{database.id}/connection-url/reveal",
+        headers={"X-API-Key": API_KEY},
+    )
+    assert response.status_code == 404
 
 
 # ── 1. Full sync flow: upload → download ────────────────────────────

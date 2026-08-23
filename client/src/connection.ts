@@ -140,6 +140,94 @@ export function getCanonicalDatabaseUrl(name?: string): string {
   return canonical;
 }
 
+/**
+ * Recover a canonical URL from the owner-authenticated gateway when it is not
+ * available locally. The server stores it encrypted and reveals it only via
+ * the explicit recovery endpoint.
+ */
+export async function recoverCanonicalDatabaseUrl(name?: string): Promise<string> {
+  const config = loadConfig();
+  const local = process.env.DATABASE_URL?.trim() || config.database_url?.trim() || '';
+  if (local) {
+    const parsed = parseUrl(local);
+    if (name && parsed.name !== name) {
+      throw new Error(`Canonical DATABASE_URL points to '${parsed.name}', not '${name}'`);
+    }
+    return local;
+  }
+
+  const inferredName = name || path.basename(config.database_path).replace(/\.db$/, '');
+  const gatewayUrl = process.env.PARADOX_GATEWAY || config.sync.gateway_url || '';
+  const apiKey = process.env.PARADOX_API_KEY || config.sync.api_key || '';
+  if (!gatewayUrl || !apiKey) return getCanonicalDatabaseUrl(name);
+
+  const gateway = new GatewayClient(gatewayUrl, apiKey);
+  let databaseId = config.database_id || '';
+  if (!databaseId) {
+    const projects = (await gateway.listProjects()) as { id: string; name: string }[];
+    const project = projects.find((entry) => !config.project_name || entry.name === config.project_name);
+    if (!project) return getCanonicalDatabaseUrl(name);
+    const databases = (await gateway.listDatabases(project.id)) as { id: string; name: string }[];
+    databaseId = databases.find((entry) => entry.name === inferredName)?.id || '';
+    if (!databaseId) return getCanonicalDatabaseUrl(name);
+    config.project_id = project.id;
+    config.project_name = project.name;
+  }
+
+  try {
+    const response = await gateway.getDatabaseUrl(databaseId, true);
+    if (!response.database_url) return getCanonicalDatabaseUrl(name);
+    const parsed = parseUrl(response.database_url);
+    if (name && parsed.name !== name) {
+      throw new Error(`Recovered DATABASE_URL points to '${parsed.name}', not '${name}'`);
+    }
+    config.database_url = response.database_url;
+    config.database_id = databaseId;
+    saveConfig(config);
+    return response.database_url;
+  } catch (error) {
+    if (error instanceof GatewayError && [404, 405, 501].includes(error.statusCode)) {
+      return getCanonicalDatabaseUrl(name);
+    }
+    throw error;
+  }
+}
+
+/**
+ * Explicitly register a locally known canonical URL on the owner’s gateway.
+ * This is the safe migration path for databases created before server URL
+ * storage existed; it performs no init, push, pull, or snapshot mutation.
+ */
+export async function registerCanonicalDatabaseUrl(databaseUrl: string): Promise<string> {
+  const config = loadConfig();
+  const parsed = parseUrl(databaseUrl);
+  const gatewayUrl = parsed.gateway_url || process.env.PARADOX_GATEWAY || config.sync.gateway_url || '';
+  const apiKey = process.env.PARADOX_API_KEY || config.sync.api_key || parsed.token || '';
+  if (!gatewayUrl || !apiKey) {
+    throw new Error('A gateway URL and owner API key are required to register DATABASE_URL');
+  }
+  const gateway = new GatewayClient(gatewayUrl, apiKey);
+  let projectId = config.project_id || '';
+  let projectName = parsed.project || config.project_name || '';
+  if (!projectId) {
+    const projects = (await gateway.listProjects()) as { id: string; name: string }[];
+    const project = projects.find((entry) => !projectName || entry.name === projectName);
+    if (!project) throw new Error(`Could not find project '${projectName || '(unspecified)'}'`);
+    projectId = project.id;
+    projectName = project.name;
+  }
+  const databases = (await gateway.listDatabases(projectId)) as { id: string; name: string }[];
+  const database = databases.find((entry) => entry.name === parsed.name);
+  if (!database) throw new Error(`Could not find database '${parsed.name}' in project '${projectName || projectId}'`);
+  await gateway.setDatabaseUrl(database.id, databaseUrl);
+  config.database_url = databaseUrl;
+  config.database_id = database.id;
+  config.project_id = projectId;
+  if (projectName) config.project_name = projectName;
+  saveConfig(config);
+  return databaseUrl;
+}
+
 // ── Sync daemon ─────────────────────────────────────────────────
 
 export interface SyncDaemonOptions {
@@ -779,6 +867,20 @@ export async function connect(opts: ConnectOptions | string): Promise<ParadConne
     logChannel: options.logChannel || process.env.PARADOX_LOG_CHANNEL || '',
   });
   await conn.init();
+
+  // Register the canonical URL server-side after provisioning. Older
+  // gateways may not have this endpoint yet, so retain legacy connectivity
+  // when they return 404/405.
+  if (resolvedGateway && databaseId) {
+    try {
+      await new GatewayClient(resolvedGateway, resolvedApiKey).setDatabaseUrl(databaseId, conn.databaseUrl);
+    } catch (error) {
+      if (!(error instanceof GatewayError) || ![404, 405, 501].includes(error.statusCode)) {
+        throw new Error(`Could not store canonical database_url on gateway: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  }
+
   try {
     const c = loadConfig();
     c.database_url = conn.databaseUrl;

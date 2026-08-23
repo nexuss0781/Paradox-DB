@@ -10,7 +10,7 @@ import pytest
 import parad.config as _cfg
 import parad.connection as pc
 from parad.connection import connect, db_state_key, generate_url, parse_url
-from parad.config import get_canonical_database_url, load_config
+from parad.config import get_canonical_database_url, load_config, register_canonical_database_url
 
 
 class FakeGatewayClient:
@@ -184,6 +184,68 @@ def test_canonical_database_url_reconstructs_and_persists_legacy_config(monkeypa
     assert parsed["passphrase"] == "secret"
     assert parsed["token"] == "token"
     assert load_config().database_url == url
+
+
+def test_recover_canonical_database_url_from_server(monkeypatch, tmp_path):
+    monkeypatch.setenv("PARADOX_HOME", str(tmp_path))
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    (tmp_path / "config.json").write_text(
+        '{"database_path": "~/omniroute-preview.db", "project_name": "omniroute-vercel-preview", '
+        '"sync": {"gateway_url": "https://g/v1", "api_key": "api-key"}}'
+    )
+
+    class RemoteGateway:
+        def __init__(self, gateway_url, api_key=""):
+            assert gateway_url == "https://g/v1"
+            assert api_key == "api-key"
+
+        def list_projects(self):
+            return [{"id": "project-id", "name": "omniroute-vercel-preview"}]
+
+        def list_databases(self, project_id):
+            assert project_id == "project-id"
+            return [{"id": "database-id", "name": "omniroute-preview"}]
+
+        def get_database_url(self, database_id, reveal=False):
+            assert database_id == "database-id"
+            assert reveal is True
+            return {"database_id": database_id, "database_url": "parad://token@local/proj/omniroute-preview?passphrase=secret&gateway=https://g/v1"}
+
+    monkeypatch.setattr("parad.gateway.GatewayClient", RemoteGateway)
+    from parad.config import recover_canonical_database_url
+
+    recovered = recover_canonical_database_url("omniroute-preview")
+    assert recovered.startswith("parad://token@local/proj/omniroute-preview")
+    assert load_config().database_url == recovered
+
+
+def test_register_canonical_database_url_updates_server_and_config(monkeypatch, tmp_path):
+    monkeypatch.setenv("PARADOX_HOME", str(tmp_path))
+    (tmp_path / "config.json").write_text(
+        '{"project_id": "project-id", "project_name": "proj", '
+        '"sync": {"gateway_url": "https://g/v1", "api_key": "api-key"}}'
+    )
+    calls = []
+
+    class RegisterGateway:
+        def __init__(self, gateway_url, api_key=""):
+            assert gateway_url == "https://g/v1"
+            assert api_key == "api-key"
+
+        def list_databases(self, project_id):
+            assert project_id == "project-id"
+            return [{"id": "database-id", "name": "mydb"}]
+
+        def set_database_url(self, database_id, database_url):
+            calls.append((database_id, database_url))
+            return {"database_id": database_id, "configured": True}
+
+    monkeypatch.setattr("parad.gateway.GatewayClient", RegisterGateway)
+    url = "parad://token@local/proj/mydb?passphrase=secret&gateway=https://g/v1"
+    assert register_canonical_database_url(url) == url
+    assert calls == [("database-id", url)]
+    assert load_config().database_url == url
+    assert load_config().database_id == "database-id"
 
 
 def test_db_state_key_project_scoped():

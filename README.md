@@ -104,7 +104,7 @@ db.close()
 
 ### Canonical Connection URL
 
-For new applications and deployments, prefer one canonical `DATABASE_URL` value rather than separate project, gateway, passphrase, and API-key settings:
+For new applications and deployments, prefer one canonical `DATABASE_URL` value rather than separate project, gateway, passphrase, and API-key settings. Project-scoped SDK connections register this value with the gateway, which stores it encrypted at rest on the server.
 
 ```python
 import os
@@ -113,7 +113,7 @@ from parad import connect
 db = connect(url=os.environ["DATABASE_URL"])
 ```
 
-Retrieve the configured URL from either SDK CLI. Output is redacted by default:
+Retrieve the configured URL from either SDK CLI. Local values are checked first; when unavailable, the CLI performs read-only owner-authenticated server recovery. Output is redacted by default:
 
 ```bash
 parad url
@@ -135,7 +135,7 @@ Set only the resulting value in the deployment environment:
 export DATABASE_URL="parad://..."
 ```
 
-Legacy connection strings and split configuration fields remain supported for existing projects. An explicit `url` argument is strongest; otherwise `DATABASE_URL` and persisted `config.database_url` are preferred before legacy reconstruction.
+Legacy connection strings and split configuration fields remain supported for existing projects. An explicit `url` argument is strongest; otherwise `DATABASE_URL`, persisted `config.database_url`, server recovery, and finally legacy reconstruction are used in that order. The full secret-bearing value is returned only by the explicit `--print-database-url` command.
 
 ---
 
