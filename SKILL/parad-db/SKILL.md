@@ -30,58 +30,28 @@ The resolver is a public static discovery document only; it never contains an
 API key or passphrase. Configure its `gatewayUrl` as the gateway API base,
 including `/v1` when the deployment requires that path.
 
-## Priority workflow — authenticate, provision, then connect
+## Canonical database_url-first workflow
 
-Follow this sequence for a new application or deployment. **Do not attempt database operations before authentication succeeds.**
-
-### 1. Resolve the active gateway
-
-Read the active-domain document described above and use its `gatewayUrl`. If the resolver is unavailable, use the documented default gateway.
-
-### 2. Authenticate
-
-Reuse a configured API key when `PARADOX_API_KEY` or `config.sync.api_key` is already present. Otherwise register an account once, then log in:
+Prefer one canonical connection value everywhere. For a new project, create the database once, print the canonical URL deliberately, and store only that URL in the deployment secret `DATABASE_URL`:
 
 ```bash
-parad auth register
 parad auth login
-```
-
-For non-interactive applications, provide the API key through the environment or secret manager. The gateway receives it as `X-API-Key`; never substitute an `Authorization: Bearer` header.
-
-### 3. Create or resolve the project and database
-
-Run the initialization flow with the desired project and database names:
-
-```bash
-parad init <database-name> --project <project-name>
-```
-
-`init` authenticates using the configured credentials, creates the project if absent, creates the database if absent, creates the encrypted local file, and pushes the initial snapshot. Treat any failed step as a failed setup; do not publish a connection URL from a partial result.
-
-The equivalent SDK operation is a project-scoped connection. It performs `ensureProject` followed by `ensureDatabase` idempotently:
-
-```ts
-const db = await connect({
-  project: 'myproject',
-  name: 'mydb',
-  apiKey: process.env.PARADOX_API_KEY,
-});
-```
-
-### 4. Capture the canonical connection URL
-
-Only after provisioning succeeds, obtain the complete URL:
-
-```bash
 parad init <database-name> --project <project-name> --print-database-url
 ```
 
-Store that value as the single deployment secret `DATABASE_URL`. Normal CLI output is redacted; never paste the full value into logs, source code, or issue reports.
+The command creates or resolves the project/database, initializes the encrypted local file, pushes the first snapshot, persists `database_url` in `~/.paradox/config.json`, and prints the complete secret-bearing URL only when `--print-database-url` is present. Do not use `init` as a recovery command for a database whose original passphrase is unavailable: generated passphrases are not recoverable and a new init can replace the remote snapshot.
 
-### 5. Use the database
+For an already provisioned database, retrieve the canonical value without touching remote data:
 
-Applications can now connect with only the canonical URL:
+```bash
+parad url --print-database-url
+# Alias:
+parad database-url --print-database-url
+```
+
+Retrieval precedence is `DATABASE_URL` environment variable, then persisted `config.database_url`, then a URL reconstructed from legacy split fields (`database_path`, `project_name`, `encryption.passphrase`, `sync.gateway_url`, and `sync.api_key`). A successful legacy reconstruction is immediately persisted as `config.database_url`. If the passphrase is missing, the command stops rather than inventing a value.
+
+Use the canonical URL directly in new applications:
 
 ```ts
 const db = await connect(process.env.DATABASE_URL!);
@@ -91,8 +61,22 @@ const db = await connect(process.env.DATABASE_URL!);
 from parad import connect
 import os
 
-db = connect(url=os.environ['DATABASE_URL'])
+db = connect(url=os.environ["DATABASE_URL"])
 ```
+
+The equivalent SDK helper is available in both languages:
+
+```ts
+import { getCanonicalDatabaseUrl } from 'parad';
+const url = getCanonicalDatabaseUrl();
+```
+
+```python
+from parad import get_canonical_database_url
+url = get_canonical_database_url()
+```
+
+The active gateway resolver remains required only for provisioning or sync operations. Resolve `https://paradox-domain.onrender.com/active-domain.json` before authenticated gateway calls, then use its `gatewayUrl` value.
 
 ## Use an existing database after provisioning
 
@@ -141,14 +125,19 @@ latest snapshot at boot (failures non-fatal).
 Config/state live at `~/.paradox/` (`$PARADOX_HOME` overrides): `config.json`
 plus one `<dbKey>.sync.json` per database — where to look when debugging sync.
 
-## Connect resolution (first match wins)
+## Connect resolution (canonical first, legacy preserved)
 
-| Concern | Order |
+An explicit `url` argument is strongest. Otherwise, when no explicit legacy target (`name` or `dbPath`) is supplied, `DATABASE_URL` is checked before persisted `config.database_url`. Only when no canonical URL is available do split legacy settings participate.
+
+| Concern | Canonical-first order |
 | --- | --- |
-| dbPath | option → `<configDir>/<name>.db` → URL name → `config.database_path` |
-| passphrase | option → URL `?passphrase=` → `PARADOX_PASSPHRASE` → `'default'` |
-| gateway | option → URL `?gateway=` → `config.sync.gateway_url` |
-| apiKey | option → URL token → `email:password@` auto-login (token saved to config) → `config.sync.api_key` |
+| database URL | explicit `url` → `DATABASE_URL` → `config.database_url` → legacy reconstruction |
+| dbPath | option → canonical URL name → `<configDir>/<name>.db` → `config.database_path` |
+| passphrase | option → canonical URL query → `PARADOX_PASSPHRASE` → config → generated only for a new local DB |
+| gateway | option → canonical URL query → `PARADOX_GATEWAY` → `config.sync.gateway_url` |
+| apiKey | option → canonical URL token → `PARADOX_API_KEY` → auto-login credentials → `config.sync.api_key` |
+
+Explicit `name`, `project`, and `dbPath` options remain supported for legacy applications and intentionally select a target instead of silently overriding it with an unrelated canonical URL.
 
 Connection strings: `parad://[token@ | email:pass@]local[/project]/<name>[?passphrase=&gateway=&token=]`.
 URL with a project ⇒ `connect` auto-provisions (ensureProject + ensureDatabase, idempotent)
@@ -156,7 +145,13 @@ and persists resolved ids/credentials to `config.json`.
 
 ## Recommended deployment setup
 
-Use the canonical URL produced by step 4 as the only deployment database secret. Treat it as a bundled credential and rotate the underlying API key or passphrase if it is exposed.
+Use the canonical URL as the only deployment database secret:
+
+```text
+DATABASE_URL=parad://...
+```
+
+Do not set separate gateway/API-key/passphrase variables for a new deployment unless a legacy integration requires them. Keep the URL in a secret manager, never in source control or logs. If it is exposed, rotate the underlying API key and encryption passphrase as appropriate and issue a new canonical URL.
 
 ## Sync model
 
@@ -204,9 +199,11 @@ await gw.rollback('myapp', 8);          // server points at v8
 await db.pull();                        // hydrate it locally
 ```
 
-CLI fallback (same operations, config-driven): `parad push`, `parad pull [version]`,
-`parad sync`, `parad status --json`, `parad versions`, `parad rollback <v>`,
+CLI fallback (same operations, config-driven): `parad url [--print-database-url]`,
+`parad database-url`, `parad push`, `parad pull [version]`, `parad sync`,
+`parad status --json`, `parad versions`, `parad rollback <v>`,
 `parad exec/insert/select/update/delete`, `parad shell`, `parad config show|set`.
+`parad config show` redacts secret-bearing fields; use the explicit URL command only when intentionally copying the canonical secret.
 
 ## Errors (quick map)
 

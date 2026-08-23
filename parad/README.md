@@ -49,10 +49,14 @@ db = connect("mydb", passphrase="secret", auto_sync=False)
 ### CLI
 
 ```bash
-# Create an encrypted database
-parad init mydb
-
+# Create a new encrypted database and print the canonical URL deliberately
+parad auth login
+parad init mydb --project myproject --print-database-url
+# Retrieve the existing canonical URL without remote mutation
+parad url
+parad url --print-database-url
 # Push to cloud
+
 parad push
 
 # Pull latest
@@ -82,32 +86,33 @@ parad shell
 | `parad update <table> <set> <where>` | Update rows |
 | `parad delete <table> <where>` | Delete rows |
 | `parad shell` | Interactive SQL REPL |
-| `parad config show/set` | Manage config |
-
-## Canonical DATABASE_URL
-
-After `parad init` successfully provisions the project and database, Parad persists the complete connection URL in `config.json` as `database_url` and prints a redacted form:
-
+| `parad config show/set` | Manage config; secret-bearing fields are redacted |
+| `parad url [name]` | Retrieve the canonical database_url |
+| `parad database-url [name]` | Alias for `parad url` |
+## Canonical DATABASE_URL first
+Use one canonical connection value for new applications and deployments. After `parad init` provisions the project/database, it persists `database_url` in `~/.paradox/config.json` and prints a redacted URL by default:
 ```bash
+parad auth login
 parad init mydb --project myproject
 ```
-
-Use `--print-database-url` only when intentionally copying the complete secret-bearing URL into a secret manager:
-
+Print the complete secret-bearing value only when intentionally copying it into a secret manager:
 ```bash
 parad init mydb --project myproject --print-database-url
 ```
-
+For an existing database, retrieve the saved canonical value without opening, syncing, or mutating the remote database:
+```bash
+parad url
+parad url --print-database-url
+```
+Retrieval checks `DATABASE_URL`, then persisted `database_url`, then reconstructs and persists a canonical URL from legacy split fields when a passphrase is available. If the passphrase is missing, it stops instead of inventing a replacement. New projects should use only `DATABASE_URL`; split fields remain supported for legacy applications.
 Applications can use the same single value:
-
 ```python
 import os
 from parad import connect
-
 db = connect(url=os.environ["DATABASE_URL"])
 ```
+An explicit `url` argument is strongest. Explicit `name` or `db_path` options remain available for legacy target selection.
 
-An explicit `url`, `name`, or `db_path` argument takes precedence over an ambient `DATABASE_URL`. Existing connection strings and config-based workflows remain supported.
 
 ## SQLAlchemy
 

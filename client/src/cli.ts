@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import * as path from 'node:path';
 import * as readline from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
-import { connect, redactUrl } from './connection.js';
+import { connect, getCanonicalDatabaseUrl, redactUrl } from './connection.js';
 import { GatewayClient } from './gateway.js';
 import { loadConfig, saveConfig } from './config.js';
 import * as state from './state.js';
@@ -34,7 +34,9 @@ Commands:
   status                   Show sync status
   versions                 List remote versions
   rollback <version>       Rollback to version
-  config show|set          Show / update config
+  config show|set          Manage config
+  url [name]               Retrieve the canonical database_url
+  database-url [name]      Alias for url
   shell                    Interactive REPL
   --help, -h               Show this help
   --version, -v            Show version
@@ -99,6 +101,13 @@ async function main(): Promise<void> {
       const conn = await connect({ url, autoSync: false });
       output({ status: 'connected', name: conn.dbKey, path: conn.engine.dbPath, database_url: displayedDatabaseUrl(conn.databaseUrl) }, jsonMode);
       conn.close();
+      break;
+    }
+    case 'url':
+    case 'database-url': {
+      const name = cleanArgs[1];
+      const databaseUrl = getCanonicalDatabaseUrl(name);
+      output({ database_url: displayedDatabaseUrl(databaseUrl) }, jsonMode);
       break;
     }
     case 'exec': {
@@ -253,7 +262,13 @@ async function main(): Promise<void> {
     case 'config': {
       const sub = cleanArgs[1];
       if (sub === 'show') {
-        output(loadConfig(), jsonMode);
+        const config = loadConfig();
+        output({
+          ...config,
+          database_url: config.database_url ? redactUrl(config.database_url) : '',
+          encryption: { ...config.encryption, passphrase: config.encryption.passphrase ? '<redacted>' : '' },
+          sync: { ...config.sync, api_key: config.sync.api_key ? '<redacted>' : '' },
+        }, jsonMode);
       } else if (sub === 'set') {
         const key = cleanArgs[2];
         const value = cleanArgs[3];

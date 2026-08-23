@@ -1,20 +1,33 @@
 # Connection Strings
 
-## Canonical `DATABASE_URL`
+## Canonical `DATABASE_URL` first
 
-After a successful project/database provisioning flow, Parad persists the resolved connection string as `database_url` in `~/.paradox/config.json`. The same value can be supplied through the `DATABASE_URL` environment variable and consumed by `connect()` with no additional connection arguments:
+Use one canonical connection value for new applications and deployments. After provisioning, Parad persists it as `database_url` in `~/.paradox/config.json`; the same value can be supplied through the `DATABASE_URL` environment variable:
 
 ```ts
 const db = await connect(process.env.DATABASE_URL!);
 ```
 
-The CLI emits a redacted `DATABASE_URL` after successful `init` or `connect`. Use `--print-database-url` only when intentionally copying the complete secret-bearing URL into a secret manager:
+Retrieve the configured value without opening or mutating the remote database:
 
-```text
+```bash
+parad url
+# Full secret-bearing output only when intentionally copying to a secret manager:
+parad url --print-database-url
+# Alias:
+parad database-url --print-database-url
+```
+
+For a new project, provision once and deliberately print the canonical value:
+
+```bash
+parad auth login
 parad init mydb --project myproject --print-database-url
 ```
 
-An explicit `url`, `name`, or `dbPath` argument takes precedence over an ambient `DATABASE_URL`. Existing `parad://`, `paradox://`, local-only, email/password, token, and config-based workflows remain supported.
+Retrieval checks `DATABASE_URL`, then persisted `config.database_url`, then reconstructs and persists a canonical URL from legacy split settings when sufficient. If an existing database has no recoverable passphrase, the command stops instead of generating a replacement or overwriting remote data.
+
+An explicit `url` argument remains strongest. Explicit `name` or `dbPath` options are preserved for legacy applications and intentionally select a legacy target. Existing `parad://`, `paradox://`, local-only, email/password, token, and config-based workflows remain supported.
 
 `parad` uses postgres-style connection strings to express everything needed to
 open a database in one line: *where it lives locally, who you are, and where to

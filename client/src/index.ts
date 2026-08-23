@@ -1,7 +1,7 @@
 export { ClientEngine } from './engine.js';
 export { drizzle } from './drizzle.js';
 export type { ParadDrizzleDatabase, ParadDrizzleSource } from './drizzle.js';
-export { connect, ParadConnection, SyncDaemon, parseUrl, generateUrl, redactUrl, dbStateKey, generatePassphrase } from './connection.js';
+export { connect, ParadConnection, SyncDaemon, parseUrl, generateUrl, redactUrl, getCanonicalDatabaseUrl, dbStateKey, generatePassphrase } from './connection.js';
 export type { ParsedUrl, ConnectOptions } from './connection.js';
 export { GatewayClient, isConnectivityError } from './gateway.js';
 export type { UploadParams, UploadResult, DownloadResult, StatusResponse } from './gateway.js';
