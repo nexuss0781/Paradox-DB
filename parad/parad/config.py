@@ -199,6 +199,111 @@ def get_canonical_database_url(name: str | None = None) -> str:
     return canonical
 
 
+def recover_canonical_database_url(name: str | None = None) -> str:
+    """Recover database_url from the server, then fall back locally.
+
+    The gateway lookup is read-only and requires the configured API key. The
+    gateway returns the URL only through the explicit owner-authenticated
+    reveal endpoint; a successful result is persisted locally.
+    """
+    config = load_config()
+    configured = os.environ.get("DATABASE_URL", "").strip() or config.database_url.strip()
+    if configured:
+        from parad.connection import parse_url
+
+        parsed = parse_url(configured)
+        if name and parsed["name"] != name:
+            raise ValueError(
+                f"Canonical DATABASE_URL points to '{parsed['name']}', not '{name}'"
+            )
+        return configured
+
+    inferred_name = name or gateway_db_name(config.database_path)
+    gateway_url = os.environ.get("PARADOX_GATEWAY", "").strip() or config.sync.gateway_url.strip()
+    api_key = os.environ.get("PARADOX_API_KEY", "").strip() or config.sync.api_key.strip()
+    if gateway_url and api_key:
+        from parad.gateway import GatewayClient, GatewayError
+
+        gateway = GatewayClient(gateway_url, api_key)
+        database_id = config.database_id.strip()
+        if not database_id:
+            projects = gateway.list_projects()
+            project = next(
+                (item for item in projects if not config.project_name or item.get("name") == config.project_name),
+                None,
+            )
+            if project:
+                databases = gateway.list_databases(project["id"])
+                database = next((item for item in databases if item.get("name") == inferred_name), None)
+                if database:
+                    database_id = database["id"]
+                    config.project_id = project["id"]
+                    config.project_name = project.get("name", config.project_name)
+        if database_id:
+            try:
+                response = gateway.get_database_url(database_id, reveal=True)
+                recovered = response.get("database_url")
+                if recovered:
+                    from parad.connection import parse_url
+
+                    parsed = parse_url(recovered)
+                    if name and parsed["name"] != name:
+                        raise ValueError(
+                            f"Recovered DATABASE_URL points to '{parsed['name']}', not '{name}'"
+                        )
+                    config.database_url = recovered
+                    config.database_id = database_id
+                    save_config(config)
+                    return recovered
+            except GatewayError as exc:
+                if exc.status_code not in (404, 405, 501):
+                    raise
+
+    return get_canonical_database_url(name)
+
+
+def register_canonical_database_url(database_url: str) -> str:
+    """Explicitly register a locally known canonical URL on the owner gateway.
+
+    This is the migration path for databases created before server URL storage;
+    it only updates the encrypted URL field and never initializes or snapshots
+    the database.
+    """
+    config = load_config()
+    from parad.connection import parse_url
+
+    parsed = parse_url(database_url)
+    gateway_url = parsed.get("gateway_url", "").strip() or os.environ.get("PARADOX_GATEWAY", "").strip() or config.sync.gateway_url.strip()
+    api_key = os.environ.get("PARADOX_API_KEY", "").strip() or config.sync.api_key.strip() or parsed.get("token", "").strip()
+    if not gateway_url or not api_key:
+        raise ValueError("A gateway URL and owner API key are required to register DATABASE_URL")
+
+    from parad.gateway import GatewayClient
+
+    gateway = GatewayClient(gateway_url, api_key)
+    project_id = config.project_id.strip()
+    project_name = parsed.get("project") or config.project_name.strip()
+    if not project_id:
+        projects = gateway.list_projects()
+        project = next((item for item in projects if not project_name or item.get("name") == project_name), None)
+        if not project:
+            raise ValueError(f"Could not find project '{project_name or '(unspecified)'}'")
+        project_id = project["id"]
+        project_name = project.get("name", project_name)
+    databases = gateway.list_databases(project_id)
+    database = next((item for item in databases if item.get("name") == parsed["name"]), None)
+    if not database:
+        raise ValueError(f"Could not find database '{parsed['name']}' in project '{project_name or project_id}'")
+    gateway.set_database_url(database["id"], database_url)
+    config.database_url = database_url
+    config.database_id = database["id"]
+    config.project_id = project_id
+    if project_name:
+        config.project_name = project_name
+    save_config(config)
+    return database_url
+
+
 def get_connection_url(name: str) -> str:
     """Backward-compatible alias for :func:`get_canonical_database_url`."""
     return get_canonical_database_url(name)

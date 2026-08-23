@@ -84,6 +84,8 @@ class ParadoxDB(Base):
     file_hash = Column(String(64), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    # Secret-bearing canonical URL, encrypted with the gateway deployment key.
+    database_url_encrypted = Column(Text, nullable=True)
 
     project = relationship("Project", back_populates="databases")
     user = relationship("User", back_populates="databases", foreign_keys=[user_id])
@@ -249,6 +251,18 @@ class DatabaseResponse(BaseModel):
     file_hash: str | None
     created_at: str
     updated_at: str
+    has_database_url: bool = False
+
+
+class DatabaseUrlWrite(BaseModel):
+    database_url: str
+
+
+class DatabaseUrlResponse(BaseModel):
+    database_id: str
+    database_url: str | None = None
+    configured: bool = False
+    redacted: bool = True
 
 
 # -- Versions --

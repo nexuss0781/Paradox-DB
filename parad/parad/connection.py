@@ -908,6 +908,21 @@ def connect(
         log_channel=log_channel or os.environ.get("PARADOX_LOG_CHANNEL", ""),
     )
 
+    # Register the canonical URL server-side after provisioning. Older
+    # gateways may not have this endpoint yet, so keep legacy connectivity
+    # working when they return 404/405.
+    if resolved_gateway and database_id:
+        try:
+            gateway_client = GatewayClient(resolved_gateway, resolved_api_key)
+            setter = getattr(gateway_client, "set_database_url", None)
+            if setter is not None:
+                setter(database_id, conn.database_url)
+        except GatewayError as exc:
+            if exc.status_code not in (404, 405, 501):
+                raise ConnectionError(
+                    f"Could not store canonical database_url on gateway: {exc}"
+                ) from exc
+
     try:
         cfg.database_url = conn.database_url
         save_config(cfg)

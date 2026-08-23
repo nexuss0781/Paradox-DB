@@ -277,4 +277,4 @@ async def test_root_endpoint(client: AsyncClient):
     assert response.status_code == 200
     body = response.json()
     assert body["service"] == "paradox-db-gateway"
-    assert body["version"] == "2.1.1"
+    assert body["version"] == "2.2.5"

@@ -41,7 +41,7 @@ parad init <database-name> --project <project-name> --print-database-url
 
 The command creates or resolves the project/database, initializes the encrypted local file, pushes the first snapshot, persists `database_url` in `~/.paradox/config.json`, and prints the complete secret-bearing URL only when `--print-database-url` is present. Do not use `init` as a recovery command for a database whose original passphrase is unavailable: generated passphrases are not recoverable and a new init can replace the remote snapshot.
 
-For an already provisioned database, retrieve the canonical value without touching remote data:
+For an already provisioned database, retrieve the canonical value with the new owner-authenticated server recovery path:
 
 ```bash
 parad url --print-database-url
@@ -49,7 +49,9 @@ parad url --print-database-url
 parad database-url --print-database-url
 ```
 
-Retrieval precedence is `DATABASE_URL` environment variable, then persisted `config.database_url`, then a URL reconstructed from legacy split fields (`database_path`, `project_name`, `encryption.passphrase`, `sync.gateway_url`, and `sync.api_key`). A successful legacy reconstruction is immediately persisted as `config.database_url`. If the passphrase is missing, the command stops rather than inventing a value.
+When no local canonical value is available, the CLI resolves the owned project/database through the gateway and calls the explicit reveal endpoint. The gateway stores `database_url` encrypted at rest and never includes it in ordinary project/database responses. The revealed value is persisted locally as `config.database_url` so later processes can use one value without another lookup. Normal `parad url` output is redacted.
+
+Local precedence remains `DATABASE_URL` environment variable, then persisted `config.database_url`, then server recovery, then a URL reconstructed from legacy split fields (`database_path`, `project_name`, `encryption.passphrase`, `sync.gateway_url`, and `sync.api_key`). A successful legacy reconstruction is immediately persisted as `config.database_url`. If neither the server nor local configuration has enough material, the command stops rather than inventing a value or running `init`.
 
 Use the canonical URL directly in new applications:
 
@@ -145,6 +147,8 @@ and persists resolved ids/credentials to `config.json`.
 
 ## Recommended deployment setup
 
+The gateway stores the canonical URL encrypted at rest in its database. Configure a dedicated `DATABASE_URL_ENCRYPTION_KEY` Fernet key on the gateway and keep it stable across restarts and deployments.
+
 Use the canonical URL as the only deployment database secret:
 
 ```text
@@ -152,6 +156,23 @@ DATABASE_URL=parad://...
 ```
 
 Do not set separate gateway/API-key/passphrase variables for a new deployment unless a legacy integration requires them. Keep the URL in a secret manager, never in source control or logs. If it is exposed, rotate the underlying API key and encryption passphrase as appropriate and issue a new canonical URL.
+
+### Canonical URL retrieval and migration
+
+Use the SDK or CLI recovery helper before attempting any database initialization. Recovery checks the ambient `DATABASE_URL` and local `config.database_url`, then calls the owner-authenticated gateway reveal endpoint for the resolved project/database, and only then falls back to legacy local reconstruction. The gateway stores the canonical value encrypted at rest and never reveals it through ordinary list/detail metadata.
+
+```bash
+parad url
+parad url --print-database-url
+```
+
+For a database created before server URL storage, an owner must provide the already-known canonical value once:
+
+```bash
+parad url register 'parad://...'
+```
+
+Registration updates only the encrypted URL field. It must not run `init`, create a replacement database, pull a snapshot, push a snapshot, or overwrite remote data. A server cannot recover a historical URL or passphrase that was never stored; do not claim recovery is possible until registration has succeeded.
 
 ## Sync model
 

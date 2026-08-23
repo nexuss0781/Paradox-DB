@@ -230,6 +230,29 @@ class GatewayClient:
         self._check(resp)
         return resp.json()
 
+    def get_database_url(self, database_id: str, reveal: bool = False) -> dict:
+        """Get redacted or explicitly revealed canonical URL metadata."""
+        path = f"{self.gateway_url}/databases/{database_id}/connection-url"
+        if reveal:
+            path += "/reveal"
+            resp = httpx.post(path, headers=self._headers(), timeout=SHORT_TIMEOUT, follow_redirects=True)
+        else:
+            resp = httpx.get(path, headers=self._headers(), timeout=SHORT_TIMEOUT, follow_redirects=True)
+        self._check(resp)
+        return resp.json()
+
+    def set_database_url(self, database_id: str, database_url: str) -> dict:
+        """Register a canonical URL; the gateway encrypts it at rest."""
+        resp = httpx.put(
+            f"{self.gateway_url}/databases/{database_id}/connection-url",
+            json={"database_url": database_url},
+            headers=self._headers(),
+            timeout=SHORT_TIMEOUT,
+            follow_redirects=True,
+        )
+        self._check(resp)
+        return resp.json()
+
     def ensure_database(self, project_id: str, name: str, description: str = "") -> dict:
         """Find a database by name inside *project_id* or create it.
 

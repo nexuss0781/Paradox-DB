@@ -1,6 +1,6 @@
 {
   "name": "parad",
-  "version": "2.2.4",
+  "version": "2.2.5",
   "description": "Paradox-DB local client engine — TypeScript SDK",
   "type": "module",
   "main": "dist/index.js",

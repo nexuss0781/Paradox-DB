@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import * as path from 'node:path';
 import * as readline from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
-import { connect, getCanonicalDatabaseUrl, redactUrl } from './connection.js';
+import { connect, recoverCanonicalDatabaseUrl, registerCanonicalDatabaseUrl, redactUrl } from './connection.js';
 import { GatewayClient } from './gateway.js';
 import { loadConfig, saveConfig } from './config.js';
 import * as state from './state.js';
@@ -36,6 +36,7 @@ Commands:
   rollback <version>       Rollback to version
   config show|set          Manage config
   url [name]               Retrieve the canonical database_url
+  url register <url>       Explicitly store a known URL on the gateway
   database-url [name]      Alias for url
   shell                    Interactive REPL
   --help, -h               Show this help
@@ -105,8 +106,18 @@ async function main(): Promise<void> {
     }
     case 'url':
     case 'database-url': {
+      if (cleanArgs[1] === 'register') {
+        const databaseUrl = cleanArgs.slice(2).join(' ').trim();
+        if (!databaseUrl) {
+          console.error('Usage: parad url register <canonical-url>');
+          process.exit(1);
+        }
+        const registered = await registerCanonicalDatabaseUrl(databaseUrl);
+        output({ registered: true, database_url: displayedDatabaseUrl(registered) }, jsonMode);
+        break;
+      }
       const name = cleanArgs[1];
-      const databaseUrl = getCanonicalDatabaseUrl(name);
+      const databaseUrl = await recoverCanonicalDatabaseUrl(name);
       output({ database_url: displayedDatabaseUrl(databaseUrl) }, jsonMode);
       break;
     }

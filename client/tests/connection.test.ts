@@ -1,7 +1,8 @@
 import { afterEach, describe, it, expect } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { vi } from 'vitest';
 import { join } from 'node:path';
-import { parseUrl, generateUrl, redactUrl, getCanonicalDatabaseUrl, dbStateKey } from '../src/connection.js';
+import { parseUrl, generateUrl, redactUrl, getCanonicalDatabaseUrl, recoverCanonicalDatabaseUrl, registerCanonicalDatabaseUrl, dbStateKey } from '../src/connection.js';
 import { GatewayError, isConnectivityError } from '../src/gateway.js';
 
 describe('parseUrl', () => {
@@ -105,6 +106,7 @@ describe('getCanonicalDatabaseUrl', () => {
     else process.env.PARADOX_HOME = originalHome;
     if (originalDatabaseUrl === undefined) delete process.env.DATABASE_URL;
     else process.env.DATABASE_URL = originalDatabaseUrl;
+    vi.restoreAllMocks();
   });
 
   it('prefers ambient DATABASE_URL', () => {
@@ -121,6 +123,70 @@ describe('getCanonicalDatabaseUrl', () => {
     delete process.env.DATABASE_URL;
     writeFileSync(join(home, 'config.json'), JSON.stringify({ database_url: 'parad://local/proj/db?passphrase=secret' }));
     expect(getCanonicalDatabaseUrl()).toBe('parad://local/proj/db?passphrase=secret');
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it('recovers and persists the canonical URL from the owner gateway', async () => {
+    const home = mkdtempSync('/tmp/parad-ts-url-');
+    process.env.PARADOX_HOME = home;
+    delete process.env.DATABASE_URL;
+    writeFileSync(join(home, 'config.json'), JSON.stringify({
+      database_path: '~/remote.db',
+      project_name: 'proj',
+      sync: { gateway_url: 'https://g/v1', api_key: 'owner-key' },
+    }));
+    const gatewayModule = await import('../src/gateway.js');
+    vi.spyOn(gatewayModule.GatewayClient.prototype, 'listProjects').mockResolvedValue([{ id: 'p1', name: 'proj' }] as any);
+    vi.spyOn(gatewayModule.GatewayClient.prototype, 'listDatabases').mockResolvedValue([{ id: 'd1', name: 'remote' }] as any);
+    const reveal = vi.spyOn(gatewayModule.GatewayClient.prototype, 'getDatabaseUrl').mockResolvedValue({
+      database_id: 'd1',
+      database_url: 'parad://owner-secret@local/proj/remote?passphrase=secret&gateway=https://g/v1',
+      configured: true,
+      redacted: false,
+    });
+    const recovered = await recoverCanonicalDatabaseUrl();
+    expect(recovered).toContain('parad://owner-secret@');
+    expect(reveal).toHaveBeenCalledWith('d1', true);
+    expect(JSON.parse(readFileSync(join(home, 'config.json'), 'utf8')).database_url).toBe(recovered);
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it('falls back safely when the gateway has no recovery endpoint', async () => {
+    const home = mkdtempSync('/tmp/parad-ts-url-');
+    process.env.PARADOX_HOME = home;
+    delete process.env.DATABASE_URL;
+    writeFileSync(join(home, 'config.json'), JSON.stringify({
+      database_path: '~/legacy.db',
+      project_name: 'proj',
+      encryption: { passphrase: 'secret' },
+      sync: { gateway_url: 'https://g/v1', api_key: 'token' },
+    }));
+    const gatewayModule = await import('../src/gateway.js');
+    vi.spyOn(gatewayModule.GatewayClient.prototype, 'listProjects').mockResolvedValue([{ id: 'p1', name: 'proj' }] as any);
+    vi.spyOn(gatewayModule.GatewayClient.prototype, 'listDatabases').mockResolvedValue([{ id: 'd1', name: 'legacy' }] as any);
+    vi.spyOn(gatewayModule.GatewayClient.prototype, 'getDatabaseUrl').mockRejectedValue(new GatewayError(404, 'not found'));
+    expect(parseUrl(await recoverCanonicalDatabaseUrl())).toMatchObject({ name: 'legacy', passphrase: 'secret' });
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it('explicitly registers a known URL without opening the database', async () => {
+    const home = mkdtempSync('/tmp/parad-ts-url-');
+    process.env.PARADOX_HOME = home;
+    delete process.env.DATABASE_URL;
+    writeFileSync(join(home, 'config.json'), JSON.stringify({
+      project_id: 'p1',
+      project_name: 'proj',
+      sync: { gateway_url: 'https://g/v1', api_key: 'owner-key' },
+    }));
+    const gatewayModule = await import('../src/gateway.js');
+    vi.spyOn(gatewayModule.GatewayClient.prototype, 'listDatabases').mockResolvedValue([{ id: 'd1', name: 'remote' }] as any);
+    const store = vi.spyOn(gatewayModule.GatewayClient.prototype, 'setDatabaseUrl').mockResolvedValue({
+      database_id: 'd1', database_url: 'parad://<redacted>@local/proj/remote?gateway=https%3A%2F%2Fg%2Fv1', configured: true, redacted: true,
+    });
+    const url = 'parad://owner-secret@local/proj/remote?passphrase=secret&gateway=https://g/v1';
+    expect(await registerCanonicalDatabaseUrl(url)).toBe(url);
+    expect(store).toHaveBeenCalledWith('d1', url);
+    expect(JSON.parse(readFileSync(join(home, 'config.json'), 'utf8')).database_id).toBe('d1');
     rmSync(home, { recursive: true, force: true });
   });
 

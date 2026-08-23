@@ -49,6 +49,12 @@ export interface StatusDatabase {
   last_sync_at: string | null;
 }
 
+export interface DatabaseUrlResponse {
+  database_id: string;
+  database_url: string | null;
+  configured: boolean;
+  redacted: boolean;
+}
 export interface StatusResponse {
   user_id: string;
   databases: StatusDatabase[];
@@ -131,7 +137,7 @@ export class GatewayClient {
     throw new GatewayError(0, lastErr instanceof Error ? lastErr.message : String(lastErr));
   }
 
-  private async request<T>(method: 'GET' | 'POST', path: string, params?: URLSearchParams, body?: unknown): Promise<T> {
+  private async request<T>(method: 'GET' | 'POST' | 'PUT', path: string, params?: URLSearchParams, body?: unknown): Promise<T> {
     const url = params ? `${this.gatewayUrl}${path}?${params.toString()}` : `${this.gatewayUrl}${path}`;
     const resp = await this.fetchWithRetry(url, {
       method,
@@ -199,6 +205,10 @@ export class GatewayClient {
     return this.request<unknown[]>('GET', `/projects/${encodeURIComponent(projectId)}/databases`);
   }
 
+  async getDatabase(databaseId: string): Promise<unknown> {
+    return this.request<unknown>('GET', `/databases/${encodeURIComponent(databaseId)}`);
+  }
+
   async createDatabase(projectId: string, name: string, description = ''): Promise<{ id: string; name: string }> {
     return this.request<{ id: string; name: string }>(
       'POST',
@@ -220,6 +230,17 @@ export class GatewayClient {
     const existing = dbs.find((d) => d.name === name);
     if (existing) return existing;
     return this.createDatabase(projectId, name, description);
+  }
+
+  async getDatabaseUrl(databaseId: string, reveal = false): Promise<DatabaseUrlResponse> {
+    if (reveal) {
+      return this.request<DatabaseUrlResponse>('POST', `/databases/${encodeURIComponent(databaseId)}/connection-url/reveal`);
+    }
+    return this.request<DatabaseUrlResponse>('GET', `/databases/${encodeURIComponent(databaseId)}/connection-url`);
+  }
+
+  async setDatabaseUrl(databaseId: string, databaseUrl: string): Promise<DatabaseUrlResponse> {
+    return this.request<DatabaseUrlResponse>('PUT', `/databases/${encodeURIComponent(databaseId)}/connection-url`, undefined, { database_url: databaseUrl });
   }
 
   async upload(params: UploadParams): Promise<UploadResult> {
