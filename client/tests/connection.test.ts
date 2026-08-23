@@ -1,5 +1,7 @@
-import { describe, it, expect } from 'vitest';
-import { parseUrl, generateUrl, redactUrl, dbStateKey } from '../src/connection.js';
+import { afterEach, describe, it, expect } from 'vitest';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { parseUrl, generateUrl, redactUrl, getCanonicalDatabaseUrl, dbStateKey } from '../src/connection.js';
 import { GatewayError, isConnectivityError } from '../src/gateway.js';
 
 describe('parseUrl', () => {
@@ -91,6 +93,51 @@ describe('redactUrl', () => {
     expect(redacted).toBe('parad://%3Credacted%3E@local/proj/mydb?gateway=https%3A%2F%2Fg%2Fv1');
     expect(redacted).not.toContain('token-abc');
     expect(redacted).not.toContain('secret');
+  });
+});
+
+describe('getCanonicalDatabaseUrl', () => {
+  const originalHome = process.env.PARADOX_HOME;
+  const originalDatabaseUrl = process.env.DATABASE_URL;
+
+  afterEach(() => {
+    if (originalHome === undefined) delete process.env.PARADOX_HOME;
+    else process.env.PARADOX_HOME = originalHome;
+    if (originalDatabaseUrl === undefined) delete process.env.DATABASE_URL;
+    else process.env.DATABASE_URL = originalDatabaseUrl;
+  });
+
+  it('prefers ambient DATABASE_URL', () => {
+    const home = mkdtempSync('/tmp/parad-ts-url-');
+    process.env.PARADOX_HOME = home;
+    process.env.DATABASE_URL = 'parad://local/proj/newdb?passphrase=secret&gateway=https://g/v1';
+    expect(getCanonicalDatabaseUrl()).toBe(process.env.DATABASE_URL);
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it('returns the persisted canonical URL before legacy fields', () => {
+    const home = mkdtempSync('/tmp/parad-ts-url-');
+    process.env.PARADOX_HOME = home;
+    delete process.env.DATABASE_URL;
+    writeFileSync(join(home, 'config.json'), JSON.stringify({ database_url: 'parad://local/proj/db?passphrase=secret' }));
+    expect(getCanonicalDatabaseUrl()).toBe('parad://local/proj/db?passphrase=secret');
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it('reconstructs and persists the canonical URL from legacy fields', () => {
+    const home = mkdtempSync('/tmp/parad-ts-url-');
+    process.env.PARADOX_HOME = home;
+    delete process.env.DATABASE_URL;
+    writeFileSync(join(home, 'config.json'), JSON.stringify({
+      database_path: '~/legacy.db',
+      project_name: 'proj',
+      encryption: { passphrase: 'secret' },
+      sync: { gateway_url: 'https://g/v1', api_key: 'token' },
+    }));
+    const url = getCanonicalDatabaseUrl();
+    expect(parseUrl(url)).toMatchObject({ name: 'legacy', project: 'proj', passphrase: 'secret', token: 'token' });
+    expect(JSON.parse(readFileSync(join(home, 'config.json'), 'utf8')).database_url).toBe(url);
+    rmSync(home, { recursive: true, force: true });
   });
 });
 

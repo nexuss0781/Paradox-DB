@@ -107,6 +107,39 @@ export function redactUrl(url: string): string {
   return parsed.toString();
 }
 
+/**
+ * Resolve the canonical single-value database URL.
+ *
+ * Precedence is explicit at the call site, then DATABASE_URL, then the
+ * persisted config.database_url. Legacy split fields are used only as a
+ * compatibility fallback and the reconstructed URL is persisted immediately.
+ */
+export function getCanonicalDatabaseUrl(name?: string): string {
+  const config = loadConfig();
+  const configured = process.env.DATABASE_URL?.trim() || config.database_url?.trim() || '';
+  if (configured) {
+    const parsed = parseUrl(configured);
+    if (name && parsed.name !== name) {
+      throw new Error(`Canonical DATABASE_URL points to '${parsed.name}', not '${name}'`);
+    }
+    return configured;
+  }
+
+  const inferredName = name || path.basename(config.database_path).replace(/\.db$/, '');
+  if (!inferredName) throw new Error('No database name is configured; run parad init <name> first');
+  const passphrase = process.env.PARADOX_PASSPHRASE || config.encryption.passphrase || '';
+  const gatewayUrl = process.env.PARADOX_GATEWAY || config.sync.gateway_url || '';
+  const apiKey = process.env.PARADOX_API_KEY || config.sync.api_key || '';
+  if (!passphrase && gatewayUrl) {
+    throw new Error(`No passphrase is configured for '${inferredName}'. Set PARADOX_PASSPHRASE or recover DATABASE_URL from the original provisioning output.`);
+  }
+
+  const canonical = generateUrl(inferredName, passphrase, gatewayUrl, config.project_name || null, apiKey);
+  config.database_url = canonical;
+  saveConfig(config);
+  return canonical;
+}
+
 // ── Sync daemon ─────────────────────────────────────────────────
 
 export interface SyncDaemonOptions {

@@ -24,6 +24,7 @@ from parad.commands.projects import project_group
 from parad.commands.databases import db_group
 from parad.commands.versions import version_group
 from parad.commands.backups import backup_group
+from parad.commands.url import url_command, database_url_command
 
 main.add_command(connect)
 main.add_command(init)
@@ -46,3 +47,5 @@ main.add_command(project_group)
 main.add_command(db_group)
 main.add_command(version_group)
 main.add_command(backup_group)
+main.add_command(url_command)
+main.add_command(database_url_command)

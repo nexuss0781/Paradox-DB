@@ -10,6 +10,11 @@ CONFIG_DIR = Path(os.environ.get("PARADOX_HOME", "~/.paradox")).expanduser()
 CONFIG_FILE = CONFIG_DIR / "config.json"
 
 
+def config_file() -> Path:
+    """Return the current config path, honoring runtime PARADOX_HOME changes."""
+    return config_dir() / "config.json"
+
+
 def config_dir() -> Path:
     """Return the current config directory.
 
@@ -81,9 +86,10 @@ def load_config() -> Config:
     _load_dotenv()
 
     user_config = {}
-    if CONFIG_FILE.exists():
+    config_path = config_file()
+    if config_path.exists():
         try:
-            user_config = json.loads(CONFIG_FILE.read_text())
+            user_config = json.loads(config_path.read_text())
         except (json.JSONDecodeError, OSError):
             pass
     merged = _deep_merge(DEFAULT_CONFIG, user_config)
@@ -105,8 +111,9 @@ def load_config() -> Config:
 
 def save_config(config: Config):
     """Save config to ~/.paradox/config.json."""
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    CONFIG_FILE.write_text(json.dumps(config.model_dump(), indent=2))
+    path = config_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(config.model_dump(), indent=2))
 
 
 def set_config_value(key: str, value: str):
@@ -145,10 +152,53 @@ def get_passphrase() -> str:
     return config.encryption.passphrase
 
 
-def get_connection_url(name: str) -> str:
-    """Get the canonical connection URL, with a legacy local fallback."""
+def get_canonical_database_url(name: str | None = None) -> str:
+    """Return the canonical single-value database URL.
+
+    Precedence is ``DATABASE_URL`` environment variable, then the persisted
+    ``database_url`` config field, then legacy split fields. When the legacy
+    fields are sufficient, the reconstructed URL is persisted immediately so
+    later processes can use the canonical value only.
+    """
     config = load_config()
-    if config.database_url and gateway_db_name(config.database_path) == name:
-        return config.database_url
-    passphrase = get_passphrase()
-    return f"parad://local/{name}?passphrase={passphrase}"
+    configured = os.environ.get("DATABASE_URL", "").strip() or config.database_url.strip()
+    if configured:
+        from parad.connection import parse_url
+
+        parsed = parse_url(configured)
+        if name and parsed["name"] != name:
+            raise ValueError(
+                f"Canonical DATABASE_URL points to '{parsed['name']}', not '{name}'"
+            )
+        return configured
+
+    inferred_name = name or gateway_db_name(config.database_path)
+    if not inferred_name:
+        raise ValueError("No database name is configured; run parad init <name> first")
+
+    passphrase = os.environ.get("PARADOX_PASSPHRASE", "").strip() or config.encryption.passphrase.strip()
+    gateway_url = os.environ.get("PARADOX_GATEWAY", "").strip() or config.sync.gateway_url.strip()
+    api_key = os.environ.get("PARADOX_API_KEY", "").strip() or config.sync.api_key.strip()
+    if gateway_url and not passphrase:
+        raise ValueError(
+            f"No passphrase is configured for '{inferred_name}'. Set PARADOX_PASSPHRASE "
+            "or recover DATABASE_URL from the original provisioning output."
+        )
+
+    from parad.connection import generate_url
+
+    canonical = generate_url(
+        inferred_name,
+        passphrase,
+        gateway_url,
+        config.project_name or None,
+        api_key,
+    )
+    config.database_url = canonical
+    save_config(config)
+    return canonical
+
+
+def get_connection_url(name: str) -> str:
+    """Backward-compatible alias for :func:`get_canonical_database_url`."""
+    return get_canonical_database_url(name)

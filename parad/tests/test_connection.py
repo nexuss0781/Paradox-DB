@@ -10,6 +10,7 @@ import pytest
 import parad.config as _cfg
 import parad.connection as pc
 from parad.connection import connect, db_state_key, generate_url, parse_url
+from parad.config import get_canonical_database_url, load_config
 
 
 class FakeGatewayClient:
@@ -152,6 +153,37 @@ def test_generate_url_local_only():
 
 def test_generate_url_omits_empty_query_params():
     assert generate_url("mydb") == "parad://local/mydb"
+
+
+def test_canonical_database_url_prefers_environment(monkeypatch, tmp_path):
+    monkeypatch.setenv("PARADOX_HOME", str(tmp_path))
+    url = "parad://local/proj/newdb?passphrase=secret&gateway=https://g/v1"
+    monkeypatch.setenv("DATABASE_URL", url)
+    assert get_canonical_database_url() == url
+
+
+def test_canonical_database_url_prefers_persisted_config(monkeypatch, tmp_path):
+    monkeypatch.setenv("PARADOX_HOME", str(tmp_path))
+    (tmp_path / "config.json").write_text('{"database_url": "parad://local/proj/db?passphrase=secret"}')
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    assert get_canonical_database_url() == "parad://local/proj/db?passphrase=secret"
+
+
+def test_canonical_database_url_reconstructs_and_persists_legacy_config(monkeypatch, tmp_path):
+    monkeypatch.setenv("PARADOX_HOME", str(tmp_path))
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    (tmp_path / "config.json").write_text(
+        '{"database_path": "~/legacy.db", "project_name": "proj", '
+        '"encryption": {"passphrase": "secret"}, '
+        '"sync": {"gateway_url": "https://g/v1", "api_key": "token"}}'
+    )
+    url = get_canonical_database_url()
+    parsed = parse_url(url)
+    assert parsed["name"] == "legacy"
+    assert parsed["project"] == "proj"
+    assert parsed["passphrase"] == "secret"
+    assert parsed["token"] == "token"
+    assert load_config().database_url == url
 
 
 def test_db_state_key_project_scoped():

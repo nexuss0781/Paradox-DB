@@ -5,6 +5,14 @@ description: Use when working with Paradox-DB or the `parad` package (TypeScript
 
 # Paradox-DB / `parad`
 
+## Mandatory Drizzle routing
+
+When a task mentions **Drizzle**, `drizzle-orm`, `parad/drizzle`, Drizzle schemas, Drizzle migrations, Drizzle queries, or TypeScript ORM compatibility, **read `Drizzle.md` in this directory before inspecting or modifying code**. Treat `Drizzle.md` as the AI execution guide for the Phase 2 adapter; use `client/docs/DRIZZLE.md` for the implementation reference and examples. Follow the guide’s connection, schema, transaction, lifecycle, testing, and reporting workflow exactly. Do not redesign the adapter or invent a second connection path when the requested work fits the documented API.
+
+## Mandatory SQLAlchemy routing
+
+When a task mentions **SQLAlchemy**, `create_engine`, `Session`, SQLAlchemy models, Python ORM compatibility, DB-API, `parad.dbapi`, or the `parad://` SQLAlchemy dialect, **read `SQLAlchemy.md` in this directory before inspecting or modifying code**. Treat `SQLAlchemy.md` as the AI execution guide for the Phase 3 Python adapter; use `parad/docs/SQLALCHEMY.md` for the implementation reference and examples. Follow the guide’s authentication, `DATABASE_URL`, DB-API, engine, ORM, transaction, lifecycle, testing, and reporting workflow exactly. Do not create a second Python connection format or bypass the Parad engine when the documented API fits the task.
+
 Encrypted-at-rest SQLite with cloud sync. On-disk file is a single AES-256-CBC
 ciphertext blob (SQLite only exists decrypted in a temp file). `parad` is the
 TypeScript SDK; the Python `parad` on PyPI is byte-compatible (same KDF/salt).
@@ -22,7 +30,55 @@ The resolver is a public static discovery document only; it never contains an
 API key or passphrase. Configure its `gatewayUrl` as the gateway API base,
 including `/v1` when the deployment requires that path.
 
-## Default workflow — use this first
+## Canonical database_url-first workflow
+
+Prefer one canonical connection value everywhere. For a new project, create the database once, print the canonical URL deliberately, and store only that URL in the deployment secret `DATABASE_URL`:
+
+```bash
+parad auth login
+parad init <database-name> --project <project-name> --print-database-url
+```
+
+The command creates or resolves the project/database, initializes the encrypted local file, pushes the first snapshot, persists `database_url` in `~/.paradox/config.json`, and prints the complete secret-bearing URL only when `--print-database-url` is present. Do not use `init` as a recovery command for a database whose original passphrase is unavailable: generated passphrases are not recoverable and a new init can replace the remote snapshot.
+
+For an already provisioned database, retrieve the canonical value without touching remote data:
+
+```bash
+parad url --print-database-url
+# Alias:
+parad database-url --print-database-url
+```
+
+Retrieval precedence is `DATABASE_URL` environment variable, then persisted `config.database_url`, then a URL reconstructed from legacy split fields (`database_path`, `project_name`, `encryption.passphrase`, `sync.gateway_url`, and `sync.api_key`). A successful legacy reconstruction is immediately persisted as `config.database_url`. If the passphrase is missing, the command stops rather than inventing a value.
+
+Use the canonical URL directly in new applications:
+
+```ts
+const db = await connect(process.env.DATABASE_URL!);
+```
+
+```python
+from parad import connect
+import os
+
+db = connect(url=os.environ["DATABASE_URL"])
+```
+
+The equivalent SDK helper is available in both languages:
+
+```ts
+import { getCanonicalDatabaseUrl } from 'parad';
+const url = getCanonicalDatabaseUrl();
+```
+
+```python
+from parad import get_canonical_database_url
+url = get_canonical_database_url()
+```
+
+The active gateway resolver remains required only for provisioning or sync operations. Resolve `https://paradox-domain.onrender.com/active-domain.json` before authenticated gateway calls, then use its `gatewayUrl` value.
+
+## Use an existing database after provisioning
 
 Auto-sync is on by default whenever a gateway is resolved. Don't hand-drive
 sync unless it fails.
@@ -69,18 +125,33 @@ latest snapshot at boot (failures non-fatal).
 Config/state live at `~/.paradox/` (`$PARADOX_HOME` overrides): `config.json`
 plus one `<dbKey>.sync.json` per database — where to look when debugging sync.
 
-## Connect resolution (first match wins)
+## Connect resolution (canonical first, legacy preserved)
 
-| Concern | Order |
+An explicit `url` argument is strongest. Otherwise, when no explicit legacy target (`name` or `dbPath`) is supplied, `DATABASE_URL` is checked before persisted `config.database_url`. Only when no canonical URL is available do split legacy settings participate.
+
+| Concern | Canonical-first order |
 | --- | --- |
-| dbPath | option → `<configDir>/<name>.db` → URL name → `config.database_path` |
-| passphrase | option → URL `?passphrase=` → `PARADOX_PASSPHRASE` → `'default'` |
-| gateway | option → URL `?gateway=` → `config.sync.gateway_url` |
-| apiKey | option → URL token → `email:password@` auto-login (token saved to config) → `config.sync.api_key` |
+| database URL | explicit `url` → `DATABASE_URL` → `config.database_url` → legacy reconstruction |
+| dbPath | option → canonical URL name → `<configDir>/<name>.db` → `config.database_path` |
+| passphrase | option → canonical URL query → `PARADOX_PASSPHRASE` → config → generated only for a new local DB |
+| gateway | option → canonical URL query → `PARADOX_GATEWAY` → `config.sync.gateway_url` |
+| apiKey | option → canonical URL token → `PARADOX_API_KEY` → auto-login credentials → `config.sync.api_key` |
+
+Explicit `name`, `project`, and `dbPath` options remain supported for legacy applications and intentionally select a target instead of silently overriding it with an unrelated canonical URL.
 
 Connection strings: `parad://[token@ | email:pass@]local[/project]/<name>[?passphrase=&gateway=&token=]`.
 URL with a project ⇒ `connect` auto-provisions (ensureProject + ensureDatabase, idempotent)
 and persists resolved ids/credentials to `config.json`.
+
+## Recommended deployment setup
+
+Use the canonical URL as the only deployment database secret:
+
+```text
+DATABASE_URL=parad://...
+```
+
+Do not set separate gateway/API-key/passphrase variables for a new deployment unless a legacy integration requires them. Keep the URL in a secret manager, never in source control or logs. If it is exposed, rotate the underlying API key and encryption passphrase as appropriate and issue a new canonical URL.
 
 ## Sync model
 
@@ -128,9 +199,11 @@ await gw.rollback('myapp', 8);          // server points at v8
 await db.pull();                        // hydrate it locally
 ```
 
-CLI fallback (same operations, config-driven): `parad push`, `parad pull [version]`,
-`parad sync`, `parad status --json`, `parad versions`, `parad rollback <v>`,
+CLI fallback (same operations, config-driven): `parad url [--print-database-url]`,
+`parad database-url`, `parad push`, `parad pull [version]`, `parad sync`,
+`parad status --json`, `parad versions`, `parad rollback <v>`,
 `parad exec/insert/select/update/delete`, `parad shell`, `parad config show|set`.
+`parad config show` redacts secret-bearing fields; use the explicit URL command only when intentionally copying the canonical secret.
 
 ## Errors (quick map)
 
@@ -167,3 +240,14 @@ Use `isConnectivityError(err)` to distinguish offline from deterministic errors.
 
 - Files on the gateway are full-file versions — every push sends the whole DB
   (default size cap 50 MB).
+
+## Security and credential rules
+
+- Registration and login are gateway operations: `POST /v1/auth/register` and `POST /v1/auth/login`. Passwords must be at least 12 characters and are bcrypt-hashed by the gateway.
+- API keys are generated by the gateway, not by the SDK. Send them in `X-API-Key`; do not use `Authorization: Bearer`.
+- Users may have multiple named API keys. Keys are returned in plaintext only at creation time, stored as hashes, may expire, and can be revoked with `DELETE /v1/auth/api-keys/{key_id}`.
+- Do not put passwords, API keys, or passphrases in production connection URLs. Prefer `PARADOX_API_KEY`, `PARADOX_PASSPHRASE`, or a secret manager.
+- `generatePassphrase()` is exported by both SDKs and returns a cryptographically random 256-bit passphrase. `connect()` generates one automatically only for a new database when no passphrase is configured.
+- Existing databases require an explicit passphrase. Set `allowLegacyDefault: true` (TypeScript) or `allow_legacy_default=True` (Python) only for a known legacy database encrypted with `default`.
+- Generated passphrases are not recoverable by the gateway. Back them up securely before moving a database to another machine.
+- See `SECURITY.md` for deployment requirements, key-management guidance, and limitations that remain outside the SDK.

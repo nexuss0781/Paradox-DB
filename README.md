@@ -102,28 +102,40 @@ for row in rows:
 db.close()
 ```
 
-### Connection String
+### Canonical Connection URL
+
+For new applications and deployments, prefer one canonical `DATABASE_URL` value rather than separate project, gateway, passphrase, and API-key settings:
 
 ```python
-# Standard connection URL (like PostgreSQL)
-db = connect(url="parad://local/users?passphrase=secret")
-
-# From environment variable
 import os
+from parad import connect
+
 db = connect(url=os.environ["DATABASE_URL"])
 ```
 
-```bash
-# Generate connection URL
-parad url
-# → parad://local/users?passphrase=secret
-```
+Retrieve the configured URL from either SDK CLI. Output is redacted by default:
 
 ```bash
-# Environment variable support
-export DATABASE_URL="parad://local/users?passphrase=secret"
-export PARADOX_PASSPHRASE="secret"
+parad url
+# Deliberately print the complete secret-bearing value for a secret manager:
+parad url --print-database-url
+parad database-url --print-database-url
 ```
+
+For a new project, provision once and capture the canonical value:
+
+```bash
+parad auth login
+parad init users --project myapp --print-database-url
+```
+
+Set only the resulting value in the deployment environment:
+
+```bash
+export DATABASE_URL="parad://..."
+```
+
+Legacy connection strings and split configuration fields remain supported for existing projects. An explicit `url` argument is strongest; otherwise `DATABASE_URL` and persisted `config.database_url` are preferred before legacy reconstruction.
 
 ---
 
@@ -278,8 +290,13 @@ parad [--version]
 │   status                        Show current logged-in user
 │
 ├── config                        Configuration group
-│   show                          Print current config as JSON
-│   set <KEY> <VALUE>             Set a config value (dotted path, e.g. sync.api_key)
+│   show                          Print current config as JSON (secrets redacted)
+│   set <KEY> <VALUE>             Set a config value (sensitive output redacted)
+│
+├── url [NAME]                    Retrieve canonical database_url (redacted)
+│   --print-database-url          Deliberately print the full secret-bearing URL
+│
+├── database-url [NAME]           Alias for url
 │
 ├── project                       Project management group
 │   list                          List all projects
