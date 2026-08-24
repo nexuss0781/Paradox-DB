@@ -88,6 +88,19 @@ For Big Pickle, prefer the short model ID `big-pickle` when the catalog exposes 
 
 Always preserve the user’s requested task, temperature, token limits, streaming preference, tools, and response format when retrying. Change only the model selection required to obtain a working route.
 
+## Metadata-first selection
+
+Treat the live `/models` response as the source of truth for model selection. When metadata fields are present, use them in this order:
+
+1. Filter by `modality` and the requested endpoint capability before comparing model families.
+2. Prefer `confidence: "high"` or `"medium"` classifications over `"low"` for automatic selection.
+3. Prefer lower-numbered `priority` bands such as `P1-curated-free` and `P2-curated-gateway` before broad community or experimental bands.
+4. Use `family` and `task_role` to match requests such as coding, reasoning, vision, image creation, audio, embeddings, or safety.
+5. Treat `quality_tier` as a routing hint, not a benchmark claim, and keep the exact provider-qualified `id` unchanged.
+6. If metadata is absent, remain backward compatible: use the exact requested ID when listed, otherwise use `auto` for chat.
+
+The metadata API may include `family`, `modality`, `task_role`, `quality_tier`, `priority`, `confidence`, and `taxonomy_source` in addition to the standard model fields. These fields describe the current catalog classification; they do not guarantee that every provider endpoint will accept every operation. Probe specialized routes before production automation.
+
 ## Common operations
 
 Use the OpenAI-compatible paths below against `OMNIROUTE_API_BASE`:
