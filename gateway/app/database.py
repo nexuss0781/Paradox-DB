@@ -54,6 +54,13 @@ async def init_db() -> None:
             text("ALTER TABLE users ADD COLUMN IF NOT EXISTS api_key_hash VARCHAR(64)")
         )
         await conn.execute(
+            text("ALTER TABLE users ADD COLUMN IF NOT EXISTS nexuss_user_id VARCHAR(128)")
+        )
+        await conn.execute(
+            text("CREATE UNIQUE INDEX IF NOT EXISTS ux_users_nexuss_user_id ON users (nexuss_user_id)")
+        )
+        await conn.execute(text("ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL"))
+        await conn.execute(
             text("CREATE UNIQUE INDEX IF NOT EXISTS ux_users_api_key_hash ON users (api_key_hash)")
         )
         await conn.execute(

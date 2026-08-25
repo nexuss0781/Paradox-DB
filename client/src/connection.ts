@@ -13,8 +13,6 @@ export interface ParsedUrl {
   passphrase: string;
   gateway_url: string;
   token: string;
-  email: string;
-  password: string;
 }
 
 // ── URL helpers ─────────────────────────────────────────────────
@@ -36,15 +34,12 @@ export function parseUrl(url: string): ParsedUrl {
   const token = qs.get('token') || '';
 
   let userToken = token;
-  let userEmail = '';
-  let userPassword = '';
   if (parsed.username !== '') {
     const username = decodeURIComponent(parsed.username);
-    const pw = parsed.password ? decodeURIComponent(parsed.password) : '';
-    if (pw || username.includes('@')) {
-      userEmail = username;
-      userPassword = pw;
-    } else if (!userToken) {
+    if (parsed.password || username.includes('@')) {
+      throw new Error('Email/password connection URLs are retired; use a Paradox or Nexuss API key');
+    }
+    if (!userToken) {
       userToken = username;
     }
   }
@@ -62,8 +57,6 @@ export function parseUrl(url: string): ParsedUrl {
     passphrase,
     gateway_url: gatewayUrl,
     token: userToken,
-    email: userEmail,
-    password: userPassword,
   };
 }
 
@@ -73,13 +66,9 @@ export function generateUrl(
   gatewayUrl = '',
   project: string | null = null,
   token = '',
-  email = '',
-  password = '',
 ): string {
   let userinfo = '';
-  if (email && password) {
-    userinfo = `${encodeURIComponent(email).replace(/%40/g, '@')}:${encodeURIComponent(password)}@`;
-  } else if (token) {
+  if (token) {
     userinfo = `${encodeURIComponent(token)}@`;
   }
   const pathname = project ? `local/${project}/${name}` : `local/${name}`;
@@ -87,7 +76,6 @@ export function generateUrl(
   const qs: string[] = [];
   if (passphrase) qs.push(`passphrase=${encodeURIComponent(passphrase)}`);
   if (gatewayUrl) qs.push(`gateway=${encodeURIComponent(gatewayUrl).replace(/%3A/g, ':').replace(/%2F/g, '/')}`);
-  if (token && email && password) qs.push(`token=${encodeURIComponent(token)}`);
   if (qs.length) url += `?${qs.join('&')}`;
   return url;
 }
@@ -781,32 +769,21 @@ export async function connect(opts: ConnectOptions | string): Promise<ParadConne
   // resolve auth
   let token = options.apiKey || '';
   if (!token) token = parsedUrl?.token || '';
-  const email = parsedUrl?.email || '';
-  const password = parsedUrl?.password || '';
 
   let resolvedApiKey = '';
   if (token) {
-    resolvedApiKey = token;
-  } else if (email && password) {
-    if (!resolvedGateway) {
-      throw new Error('email/password in URL require a gateway');
-    }
-    const gw = new GatewayClient(resolvedGateway);
-    try {
-      const result = await gw.login(email, password);
-      resolvedApiKey = result.api_key;
-    } catch (exc) {
-      throw new Error(`Login to gateway failed: ${exc instanceof Error ? exc.message : String(exc)}`);
-    }
-    if (!resolvedApiKey) {
-      throw new Error('Login succeeded but no API key was returned');
-    }
-    try {
-      const c = loadConfig();
-      c.sync.api_key = resolvedApiKey;
-      saveConfig(c);
-    } catch {
-      // non-fatal
+    if (token.startsWith('nxa_')) {
+      if (!resolvedGateway) throw new Error('A Nexuss Auth API key requires a Paradox gateway');
+      const gateway = new GatewayClient(resolvedGateway);
+      try {
+        const result = await gateway.exchangeNexussApiKey(token);
+        resolvedApiKey = result.api_key;
+      } catch (exc) {
+        throw new Error(`Nexuss Auth exchange failed: ${exc instanceof Error ? exc.message : String(exc)}`);
+      }
+      if (!resolvedApiKey.startsWith('pk_')) throw new Error('Nexuss Auth exchange did not return a Paradox API key');
+    } else {
+      resolvedApiKey = token;
     }
   } else {
     resolvedApiKey = resolvedGateway ? cfg.sync.api_key : '';

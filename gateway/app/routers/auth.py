@@ -11,10 +11,7 @@ from ..auth import (
     generate_api_key,
     get_current_user,
     hash_api_key,
-    hash_password,
     rate_limiter,
-    validate_password,
-    verify_password,
 )
 from ..database import get_db
 from ..models import (
@@ -23,10 +20,13 @@ from ..models import (
     APIKeyResponse,
     AuthResponse,
     LoginRequest,
+    NexussApiKeyExchangeRequest,
+    NexussHandoffExchangeRequest,
     RegisterRequest,
     User,
     UserResponse,
 )
+from ..nexuss_auth import exchange_nexuss_handoff, provision_nexuss_user, verify_nexuss_api_key
 
 router = APIRouter(prefix="/v1/auth", tags=["auth"])
 
@@ -72,43 +72,46 @@ def _key_response(record: APIKey, plaintext: str | None = None) -> APIKeyRespons
     )
 
 
-@router.post("/register", response_model=AuthResponse)
-async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
-    if not rate_limiter.check(f"register:{body.email.lower()}"):
-        raise HTTPException(status_code=429, detail="Too many registrations, try again later")
-    try:
-        validate_password(body.password)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    existing = await db.execute(select(User).where(User.email == body.email))
-    if existing.scalar_one_or_none():
-        raise HTTPException(status_code=409, detail="Email already registered")
-    existing = await db.execute(select(User).where(User.username == body.username))
-    if existing.scalar_one_or_none():
-        raise HTTPException(status_code=409, detail="Username already taken")
-    user = User(
-        id=uuid.uuid4(),
-        email=body.email,
-        username=body.username,
-        password_hash=hash_password(body.password),
+@router.post("/register", status_code=410)
+async def register(_: RegisterRequest):
+    """Password registration is retired in favor of Nexuss Auth."""
+    raise HTTPException(
+        status_code=410,
+        detail="Use Nexuss Auth to sign in, then exchange its API key",
     )
-    api_key, _ = _issue_api_key(user, db, "initial")
-    db.add(user)
+
+
+@router.post("/login", status_code=410)
+async def login(_: LoginRequest):
+    """Password login is retired in favor of Nexuss Auth."""
+    raise HTTPException(
+        status_code=410,
+        detail="Use parad auth login --api-key with a Paradox or Nexuss API key",
+    )
+
+
+@router.post("/nexuss/exchange", response_model=AuthResponse)
+async def exchange_nexuss_api_key(
+    body: NexussApiKeyExchangeRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Convert a verified Nexuss ``nxa_`` key into a local Paradox ``pk_`` key."""
+    if not rate_limiter.check(f"nexuss:{hash_api_key(body.api_key)[:16]}"):
+        raise HTTPException(status_code=429, detail="Too many Nexuss authentication attempts")
+    user = await provision_nexuss_user(await verify_nexuss_api_key(body.api_key), db)
+    api_key, _ = _issue_api_key(user, db, "nexuss-exchange")
     await db.flush()
     return _auth_response(user, api_key)
 
 
-@router.post("/login", response_model=AuthResponse)
-async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
-    if not rate_limiter.check(f"login:{body.email.lower()}"):
-        raise HTTPException(status_code=429, detail="Too many login attempts, try again later")
-    result = await db.execute(select(User).where(User.email == body.email))
-    user = result.scalar_one_or_none()
-    if not user or not verify_password(body.password, user.password_hash):
-        raise HTTPException(status_code=401, detail="Invalid email or password")
-    if not user.is_active:
-        raise HTTPException(status_code=403, detail="Account disabled")
-    api_key, _ = _issue_api_key(user, db, "login")
+@router.post("/nexuss/handoff", response_model=AuthResponse)
+async def exchange_nexuss_handoff_token(
+    body: NexussHandoffExchangeRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Trusted server callback for a one-time Google/Nexuss handoff token."""
+    user = await provision_nexuss_user(await exchange_nexuss_handoff(body.handoff_token), db)
+    api_key, _ = _issue_api_key(user, db, "nexuss-handoff")
     await db.flush()
     return _auth_response(user, api_key)
 

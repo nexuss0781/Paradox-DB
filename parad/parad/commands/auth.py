@@ -1,4 +1,4 @@
-"""parad auth — Register, login, and manage authentication."""
+"""parad auth — authenticate with Paradox or Nexuss Auth API keys."""
 
 import click
 from click import ClickException
@@ -12,49 +12,51 @@ def auth_group():
     pass
 
 
+def authenticate_api_key(config, api_key: str) -> tuple[GatewayClient, dict]:
+    """Validate a Paradox key or exchange a Nexuss key without persisting nxa_."""
+    supplied = api_key.strip()
+    if not supplied:
+        raise ClickException("Provide a Paradox pk_ key or a Nexuss Auth nxa_ key")
+    gateway = GatewayClient(config.sync.gateway_url)
+    if supplied.startswith("nxa_"):
+        result = gateway.exchange_nexuss_api_key(supplied)
+        resolved_key = result.get("api_key", "")
+        if not resolved_key.startswith("pk_"):
+            raise ClickException("Nexuss Auth exchange did not return a Paradox API key")
+        gateway.api_key = resolved_key
+    else:
+        gateway.api_key = supplied
+        result = {"api_key": supplied, **gateway.get_me()}
+    set_config_value("sync.api_key", gateway.api_key)
+    config.sync.api_key = gateway.api_key
+    return gateway, result
+
+
 @auth_group.command("register")
-@click.option("--email", prompt=True)
-@click.option("--username", prompt=True)
-@click.option("--password", prompt=True, hide_input=True, confirmation_prompt=True)
-def register(email, username, password):
-    """Register a new account."""
-    config = load_config()
-    gw = GatewayClient(config.sync.gateway_url)
-    try:
-        result = gw.register_email(email, username, password)
-        token = result.get("api_key", "")
-        if token:
-            set_config_value("sync.api_key", token)
-        click.echo(f"✓ Registered as {result.get('username', '')} ({result.get('email', '')})")
-        click.echo(f"  User ID: {result.get('user_id', '')}")
-        if token:
-            click.echo("  API key (shown once): " + token)
-    except GatewayError as e:
-        click.echo(f"✗ Registration failed: {e}")
-        raise SystemExit(1)
+def register():
+    """Explain the passwordless Nexuss Auth registration flow."""
+    raise ClickException(
+        "Paradox accounts are created through Nexuss Auth. Sign in with Google in the Paradox web flow, "
+        "then run 'parad auth login --api-key <nexuss nxa_ key>'."
+    )
 
 
 @auth_group.command("login")
-@click.option("--email", prompt=True)
-@click.option("--password", prompt=True, hide_input=True)
-def login(email, password):
-    """Login with email and password."""
+@click.option("--api-key", envvar="PARADOX_API_KEY", help="Paradox pk_ key or Nexuss Auth nxa_ key")
+def login(api_key: str | None):
+    """Authenticate using a Paradox key or exchange a Nexuss Auth key."""
     config = load_config()
-    gw = GatewayClient(config.sync.gateway_url)
+    supplied = api_key or click.prompt("Paradox or Nexuss API key", hide_input=True)
     try:
-        result = gw.login(email, password)
-        token = result.get("api_key", "")
-        if token:
-            set_config_value("sync.api_key", token)
+        _, result = authenticate_api_key(config, supplied)
         click.echo(f"✓ Logged in as {result.get('username', '')}")
-        click.echo("  API key (shown once): " + token)
     except GatewayError as e:
         click.echo(f"✗ Login failed: {e}")
         raise SystemExit(1)
 
 
 def _ensure_auth(gw):
-    """Ensure user is authenticated. Prompt for credentials if needed.
+    """Ensure user is authenticated. Prompt for an API key if needed.
 
     In non-interactive mode (CI/cloud), raises an error instead of prompting.
     """
@@ -73,17 +75,16 @@ def _ensure_auth(gw):
         )
 
     click.echo("Authentication required.")
-    email = click.prompt("Email")
-    password = click.prompt("Password", hide_input=True)
+    api_key = click.prompt("Paradox or Nexuss API key", hide_input=True)
 
     try:
-        result = gw.login(email, password)
-        token = result.get("api_key")
-        if token:
-            set_config_value("sync.api_key", token)
+        config = load_config()
+        resolved, _ = authenticate_api_key(config, api_key)
+        gw.api_key = resolved.api_key
+        if gw.api_key:
             click.echo("✓ Authentication successful")
         else:
-            raise ClickException("Login succeeded but no API key received")
+            raise ClickException("Authentication succeeded but no Paradox API key was received")
     except GatewayError as e:
         raise ClickException(f"Authentication failed: {e}")
 

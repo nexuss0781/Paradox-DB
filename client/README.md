@@ -37,8 +37,8 @@ await db.close();
 Connect to a specific database on the cloud instead:
 
 ```ts
-// Connection string: project-scoped, auto-login, auto-provisioned.
-const db = await connect('parad://me@example.com:secret@local/acme/todos?passphrase=hunter2');
+// Connection string: project-scoped, API-key authenticated, auto-provisioned.
+const db = await connect('parad://pk_example@local/acme/todos?passphrase=hunter2');
 ```
 
 ## Documentation
@@ -46,7 +46,7 @@ const db = await connect('parad://me@example.com:secret@local/acme/todos?passphr
 | Guide | Contents |
 | --- | --- |
 | [Sync workflows](docs/SYNC.md) | Default auto-sync, offline handling, conflict rules, optional manual push/pull |
-| [Connection strings](docs/CONNECTION_STRINGS.md) | URL format, tokens, email/password, provisioning |
+| [Connection strings](docs/CONNECTION_STRINGS.md) | URL format, API keys, Nexuss exchange, provisioning |
 | [API reference](docs/API.md) | `connect`, `ParadConnection`, `SyncDaemon`, `ClientEngine`, `GatewayClient`, config & state |
 | [Encryption](docs/ENCRYPTION.md) | AES-256-CBC, PBKDF2 parameters, file format |
 | [CLI](docs/CLI.md) | `parad` command-line reference |

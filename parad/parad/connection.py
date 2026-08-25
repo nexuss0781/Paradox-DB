@@ -33,12 +33,11 @@ def parse_url(url: str) -> dict:
 
         parad://local/{name}?passphrase=...                                    # local only
         parad://local/{project}/{name}?passphrase=...&gateway=...              # project scoped
-        parad://local/{project}/{name}?passphrase=...&gateway=...&token=<jwt>  # explicit token
-        parad://{email}:{password}@local/{project}/{name}?passphrase=...       # auto-login
+        parad://local/{project}/{name}?passphrase=...&gateway=...&token=<api-key>
         parad://{token}@local/{project}/{name}?passphrase=...                  # userinfo token
 
     Returns a dict with keys ``name``, ``project``, ``passphrase``,
-    ``gateway_url``, ``token``, ``email``, ``password``.
+    ``gateway_url`` and ``token``. Email/password URLs are deliberately rejected.
     """
     parsed = urlparse(url)
     if parsed.scheme not in ("parad", "paradox"):
@@ -49,15 +48,11 @@ def parse_url(url: str) -> dict:
     gateway_url = qs.get("gateway", [""])[0]
     token = qs.get("token", [""])[0]
 
-    email = ""
-    password = ""
     if parsed.username is not None:
         username = unquote(parsed.username)
-        if parsed.password is not None:
-            password = unquote(parsed.password)
-        if password or "@" in username:
-            email = username
-        elif not token:
+        if parsed.password is not None or "@" in username:
+            raise ValueError("Email/password connection URLs are retired; use a Paradox or Nexuss API key")
+        if not token:
             token = username
 
     parts = parsed.path.strip("/").split("/")
@@ -72,8 +67,6 @@ def parse_url(url: str) -> dict:
         "passphrase": passphrase,
         "gateway_url": gateway_url,
         "token": token,
-        "email": email,
-        "password": password,
     }
 
 
@@ -83,14 +76,10 @@ def generate_url(
     gateway_url: str = "",
     project: str | None = None,
     token: str = "",
-    email: str = "",
-    password: str = "",
 ) -> str:
     """Generate a ``parad://`` connection URL (postgres-like)."""
     userinfo = ""
-    if email and password:
-        userinfo = f"{quote(email, safe='@')}:{quote(password, safe='')}@"
-    elif token:
+    if token:
         userinfo = f"{quote(token, safe='')}@"
     path = f"local/{project}/{name}" if project else f"local/{name}"
     url = f"parad://{userinfo}{path}"
@@ -99,8 +88,6 @@ def generate_url(
         qs.append(f"passphrase={quote(passphrase, safe='')}")
     if gateway_url:
         qs.append(f"gateway={quote(gateway_url, safe=':/')}")
-    if token and email and password:
-        qs.append(f"token={quote(token, safe='')}")
     if qs:
         url += "?" + "&".join(qs)
     return url
@@ -752,7 +739,7 @@ def connect(
     Resolution order:
 
     1. If *url* is provided, parse it for name / project / passphrase /
-       gateway_url / token / email / password.
+       gateway_url / token.
     2. If *name* is provided, derive *db_path* from ``~/.paradox/{name}.db``.
     3. If *db_path* is provided, use it directly.
     4. If no positional hints, fall back to config defaults.
@@ -763,7 +750,7 @@ def connect(
        readable.
     6. Gateway: explicit > parsed from URL > config.
     7. Auth token: explicit ``api_key`` arg > URL ``token`` param > userinfo
-       token > ``email:password`` (auto-login) > config ``sync.api_key``.
+       token > ``PARADOX_API_KEY`` / config ``sync.api_key``.
 
     Project / database are auto-provisioned on the gateway (created if
     missing) whenever a project name is present in the URL, and the
@@ -835,28 +822,21 @@ def connect(
     token = api_key
     if not token:
         token = parsed_url.get("token", "") or ""
-    email = parsed_url.get("email", "") or ""
-    password = parsed_url.get("password", "") or ""
-
     resolved_api_key = ""
     if token:
-        resolved_api_key = token
-    elif email and password:
-        if not resolved_gateway:
-            raise ValueError("email/password in URL require a gateway")
-        gw = GatewayClient(resolved_gateway)
-        try:
-            result = gw.login(email, password)
-        except GatewayError as exc:
-            raise ConnectionError(f"Login to gateway failed: {exc}") from exc
-        resolved_api_key = gw.api_key
-        if not resolved_api_key:
-            raise ConnectionError("Login succeeded but no token was returned")
-        try:
-            set_config_value("sync.api_key", resolved_api_key)
-            cfg = load_config()
-        except Exception:
-            pass
+        if token.startswith("nxa_"):
+            if not resolved_gateway:
+                raise ValueError("A Nexuss Auth API key requires a Paradox gateway")
+            gw = GatewayClient(resolved_gateway)
+            try:
+                result = gw.exchange_nexuss_api_key(token)
+            except GatewayError as exc:
+                raise ConnectionError(f"Nexuss Auth exchange failed: {exc}") from exc
+            resolved_api_key = result.get("api_key", "")
+            if not resolved_api_key.startswith("pk_"):
+                raise ConnectionError("Nexuss Auth exchange did not return a Paradox API key")
+        else:
+            resolved_api_key = token
     else:
         resolved_api_key = cfg.sync.api_key if resolved_gateway else ""
 

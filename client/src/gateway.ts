@@ -170,18 +170,9 @@ export class GatewayClient {
     return buf as unknown as T;
   }
 
-  /** Login issues a fresh cloud API key (the previous key is invalidated). */
-  async login(email: string, password: string): Promise<AuthResult> {
-    return this.request<AuthResult>('POST', '/auth/login', undefined, { email, password });
-  }
-
-  /** Register creates the account and returns the first cloud API key. */
-  async registerEmail(email: string, username: string, password: string): Promise<AuthResult> {
-    return this.request<AuthResult>('POST', '/auth/register', undefined, {
-      email,
-      username,
-      password,
-    });
+  /** Exchange a Nexuss ``nxa_`` credential for a Paradox ``pk_`` key. */
+  async exchangeNexussApiKey(apiKey: string): Promise<AuthResult> {
+    return this.request<AuthResult>('POST', '/auth/nexuss/exchange', undefined, { api_key: apiKey });
   }
 
   /** Mint a fresh API key for the current user (the old key is invalidated). */
