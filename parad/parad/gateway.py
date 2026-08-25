@@ -84,29 +84,13 @@ class GatewayClient:
         self.api_key = data.get("api_key", self.api_key)
         return RegisterResponse(**data)
 
-    # ── Email auth ───────────────────────────────────────────────
+    # ── Nexuss credential exchange ───────────────────────────────
 
-    def register_email(self, email: str, username: str, password: str) -> dict:
-        """Register a new account with email, username, and password."""
+    def exchange_nexuss_api_key(self, api_key: str) -> dict:
+        """Exchange a Nexuss ``nxa_`` credential for a Paradox ``pk_`` key."""
         resp = httpx.post(
-            f"{self.gateway_url}/auth/register",
-            json={"email": email, "username": username, "password": password},
-            headers={"Content-Type": "application/json"},
-            timeout=COLD_START_TIMEOUT,
-            follow_redirects=True,
-        )
-        self._check(resp)
-        data = resp.json()
-        token = data.get("api_key")
-        if token:
-            self.api_key = token
-        return data
-
-    def login(self, email: str, password: str) -> dict:
-        """Login with email and password. Issues a fresh cloud API key."""
-        resp = httpx.post(
-            f"{self.gateway_url}/auth/login",
-            json={"email": email, "password": password},
+            f"{self.gateway_url}/auth/nexuss/exchange",
+            json={"api_key": api_key},
             headers={"Content-Type": "application/json"},
             timeout=COLD_START_TIMEOUT,
             follow_redirects=True,

@@ -29,7 +29,10 @@ class User(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     email = Column(String(255), unique=True, nullable=False)
     username = Column(String(100), unique=True, nullable=False)
-    password_hash = Column(String(255), nullable=False)
+    # Native password login has been retired. Existing hashes remain readable
+    # for migration, while Nexuss-provisioned users have no local password.
+    password_hash = Column(String(255), nullable=True)
+    nexuss_user_id = Column(String(128), unique=True, nullable=True)
     api_key_hash = Column(String(64), unique=True, nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
@@ -182,6 +185,14 @@ class AuthResponse(BaseModel):
     email: str
     username: str
     api_key: str
+
+
+class NexussApiKeyExchangeRequest(BaseModel):
+    api_key: str
+
+
+class NexussHandoffExchangeRequest(BaseModel):
+    handoff_token: str
 
 
 class APIKeyCreateRequest(BaseModel):

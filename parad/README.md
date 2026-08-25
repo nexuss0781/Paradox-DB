@@ -20,9 +20,9 @@ sync daemon version-stores your changes automatically. No manual push needed.
 ```python
 from parad import connect
 
-# Auto-login (email:password), auto-provision project + database on the
-# gateway, open/create the local encrypted SQLite file.
-db = connect(url="parad://alice@example.com:secretpw@local/myproj/mydb?passphrase=secret")
+# Exchange a Nexuss API key once for a Paradox key, then use the Paradox key
+# in the connection URL to auto-provision the project and database.
+db = connect(url="parad://pk_example@local/myproj/mydb?passphrase=secret")
 
 # Build SQL offline like any SQLite database ...
 db.execute("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT)")
@@ -50,7 +50,7 @@ db = connect("mydb", passphrase="secret", auto_sync=False)
 
 ```bash
 # Create a new encrypted database and print the canonical URL deliberately
-parad auth login
+parad auth login --api-key "$PARADOX_API_KEY"
 parad init mydb --project myproject --print-database-url
 # Retrieve the existing canonical URL; local values are checked first,
 # then the owner-authenticated gateway recovery endpoint is used
@@ -94,7 +94,7 @@ parad shell
 ## Canonical DATABASE_URL first
 Use one canonical connection value for new applications and deployments. After `parad init` provisions the project/database, it persists `database_url` in `~/.paradox/config.json` and prints a redacted URL by default:
 ```bash
-parad auth login
+parad auth login --api-key "$PARADOX_API_KEY"
 parad init mydb --project myproject
 ```
 Print the complete secret-bearing value only when intentionally copying it into a secret manager:

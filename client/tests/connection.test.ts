@@ -14,8 +14,6 @@ describe('parseUrl', () => {
       passphrase: 'secret',
       gateway_url: '',
       token: '',
-      email: '',
-      password: '',
     });
   });
 
@@ -31,18 +29,13 @@ describe('parseUrl', () => {
     expect(p.token).toBe('tok-abc');
   });
 
-  it('parses email:password in userinfo', () => {
-    const p = parseUrl('parad://alice@example.com:secretpw@local/myproj/mydb?passphrase=secret');
-    expect(p.email).toBe('alice@example.com');
-    expect(p.password).toBe('secretpw');
-    expect(p.token).toBe('');
+  it('rejects email:password in userinfo', () => {
+    expect(() => parseUrl('parad://alice@example.com:secretpw@local/myproj/mydb?passphrase=secret')).toThrow(/retired/);
   });
 
   it('parses token in userinfo', () => {
     const p = parseUrl('parad://tok-abc@local/myproj/mydb?passphrase=secret');
     expect(p.token).toBe('tok-abc');
-    expect(p.email).toBe('');
-    expect(p.password).toBe('');
   });
 
   it('parses nested project path', () => {
@@ -68,13 +61,6 @@ describe('generateUrl', () => {
     expect(p.token).toBe('t1');
     expect(p.passphrase).toBe('secret');
     expect(p.gateway_url).toBe('https://g/v1');
-  });
-
-  it('round-trips an email:password form', () => {
-    const url = generateUrl('mydb', 'secret', 'https://g/v1', 'proj', '', 'alice@example.com', 'pw');
-    const p = parseUrl(url);
-    expect(p.email).toBe('alice@example.com');
-    expect(p.password).toBe('pw');
   });
 
   it('produces a local-only URL', () => {

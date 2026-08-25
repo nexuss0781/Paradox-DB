@@ -68,7 +68,7 @@ pip install parad
 ### Setup (one time)
 
 ```bash
-parad auth register          # create account (prompts for email/password)
+parad auth login --api-key "$PARADOX_API_KEY"  # accepts a Paradox pk_ key or exchanges a Nexuss nxa_ key
 parad init users --project myapp  # creates everything: project, DB, local file, cloud backup
 ```
 
@@ -125,7 +125,7 @@ parad database-url --print-database-url
 For a new project, provision once and capture the canonical value:
 
 ```bash
-parad auth login
+parad auth login --api-key "$PARADOX_API_KEY"
 parad init users --project myapp --print-database-url
 ```
 
@@ -280,13 +280,9 @@ parad [--version]
 │   --status                      Show daemon PID / status
 │
 ├── auth                          Authentication group
-│   register                      Create account (prompts for email, username, password)
-│       --email                   Email (prompted)
-│       --username                Username (prompted)
-│       --password                Password (prompted, hidden)
-│   login                         Log in (prompts for email, password)
-│       --email                   Email (prompted)
-│       --password                Password (prompted, hidden)
+│   register                      Explains the Nexuss Auth registration flow
+│   login                         Validate a Paradox pk_ key or exchange a Nexuss nxa_ key
+│       --api-key                 Paradox API key or Nexuss Auth API key
 │   status                        Show current logged-in user
 │
 ├── config                        Configuration group
@@ -330,7 +326,7 @@ parad [--version]
 
 ```bash
 # Full workflow: init → use → manage
-parad auth register
+parad auth login --api-key "$PARADOX_API_KEY"
 parad init users --project myapp
 parad exec "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)"
 parad insert users '{"name": "Alice", "email": "alice@example.com"}'
@@ -461,8 +457,8 @@ uvicorn app.main:app --reload --port 8000
 **Auth**
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/v1/auth/register` | Register user |
-| `POST` | `/v1/auth/login` | Login |
+| `POST` | `/v1/auth/nexuss/exchange` | Exchange a Nexuss API key for a Paradox API key |
+| `POST` | `/v1/auth/nexuss/handoff` | Trusted server exchange for a one-time Nexuss Google handoff |
 | `GET` | `/v1/auth/me` | Current user |
 
 **Projects**
@@ -518,7 +514,7 @@ All parad behavior is configurable via environment variables. These override any
 
 ```bash
 # Authentication (for CI/cloud — no interactive prompts)
-PARADOX_API_KEY="pk_..."          # cloud API key from parad auth register/login
+PARADOX_API_KEY="pk_..."          # Paradox key minted after Nexuss Auth verification
 
 # Encryption
 PARADOX_PASSPHRASE="secret"       # default encryption passphrase
@@ -676,7 +672,7 @@ async def get_messages(room: str, limit: int = 50):
 
 **Render environment variables:**
 ```
-PARADOX_API_KEY=eyJ...       # from parad auth login
+PARADOX_API_KEY=pk_...        # minted after Nexuss Auth verification
 PARADOX_PASSPHRASE=secret    # encryption key
 ```
 

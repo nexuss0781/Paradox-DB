@@ -20,14 +20,14 @@ class FakeGatewayClient:
         self.gateway_url = gateway_url
         self.api_key = api_key
         self.login_calls = 0
+        self.nexuss_exchange_calls = 0
         FakeGatewayClient.instances.append(self)
 
-    def login(self, email, password):
-        self.login_calls += 1
-        self.login_email = email
-        self.login_password = password
-        self.api_key = "pk_from_login"
-        return {"user_id": "u1", "email": email, "username": email, "api_key": self.api_key}
+    def exchange_nexuss_api_key(self, api_key):
+        self.nexuss_exchange_calls += 1
+        self.nexuss_api_key = api_key
+        self.api_key = "pk_from_nexuss"
+        return {"user_id": "u1", "email": "alice@example.com", "username": "alice", "api_key": self.api_key}
 
     def ensure_project(self, name, description=""):
         return {"id": "p-" + name, "name": name}
@@ -58,8 +58,6 @@ def test_parse_url_local_only():
         "passphrase": "secret",
         "gateway_url": "",
         "token": "",
-        "email": "",
-        "password": "",
     }
 
 
@@ -81,14 +79,12 @@ def test_parse_url_explicit_token_query():
     assert parsed["token"] == "tok-abc"
 
 
-def test_parse_url_email_password_userinfo():
-    parsed = parse_url(
-        "parad://alice@example.com:secretpw@local/myproj/mydb"
-        "?passphrase=secret"
-    )
-    assert parsed["email"] == "alice@example.com"
-    assert parsed["password"] == "secretpw"
-    assert parsed["token"] == ""
+def test_parse_url_rejects_email_password_userinfo():
+    with pytest.raises(ValueError, match="retired"):
+        parse_url(
+            "parad://alice@example.com:secretpw@local/myproj/mydb"
+            "?passphrase=secret"
+        )
 
 
 def test_parse_url_token_userinfo():
@@ -96,8 +92,6 @@ def test_parse_url_token_userinfo():
         "parad://tok-abc@local/myproj/mydb?passphrase=secret"
     )
     assert parsed["token"] == "tok-abc"
-    assert parsed["email"] == ""
-    assert parsed["password"] == ""
 
 
 def test_parse_url_nested_project_path():
@@ -133,18 +127,6 @@ def test_generate_url_round_trips_token_form():
     assert parsed["token"] == "t1"
     assert parsed["passphrase"] == "secret"
     assert parsed["gateway_url"] == "https://g/v1"
-    assert parsed["email"] == ""
-    assert parsed["password"] == ""
-
-
-def test_generate_url_round_trips_email_password_form():
-    url = generate_url(
-        "mydb", "secret", "https://g/v1", "proj", "", "alice@example.com", "pw"
-    )
-    parsed = parse_url(url)
-    assert parsed["email"] == "alice@example.com"
-    assert parsed["password"] == "pw"
-    assert parsed["token"] == ""
 
 
 def test_generate_url_local_only():
@@ -221,6 +203,7 @@ def test_recover_canonical_database_url_from_server(monkeypatch, tmp_path):
 
 def test_register_canonical_database_url_updates_server_and_config(monkeypatch, tmp_path):
     monkeypatch.setenv("PARADOX_HOME", str(tmp_path))
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     (tmp_path / "config.json").write_text(
         '{"project_id": "project-id", "project_name": "proj", '
         '"sync": {"gateway_url": "https://g/v1", "api_key": "api-key"}}'
@@ -289,27 +272,26 @@ def test_connect_userinfo_token_used(fake_gateway):
     assert sum(g.login_calls for g in FakeGatewayClient.instances) == 0
 
 
-def test_connect_email_password_triggers_login(fake_gateway):
+def test_connect_nexuss_api_key_triggers_exchange(fake_gateway):
     captured = fake_gateway
     connect(
-        url="parad://alice@example.com:secretpw@local/myproj/mydb"
+        url="parad://nxa_test_key@local/myproj/mydb"
         "?passphrase=secret&gateway=https://g/v1",
         auto_sync=False,
     )
-    assert sum(g.login_calls for g in FakeGatewayClient.instances) == 1
-    login_gw = FakeGatewayClient.instances[0]
-    assert login_gw.login_email == "alice@example.com"
-    assert login_gw.login_password == "secretpw"
-    assert captured["api_key"] == "pk_from_login"
+    assert sum(g.nexuss_exchange_calls for g in FakeGatewayClient.instances) == 1
+    exchange_gw = FakeGatewayClient.instances[0]
+    assert exchange_gw.nexuss_api_key == "nxa_test_key"
+    assert captured["api_key"] == "pk_from_nexuss"
 
 
-def test_connect_email_password_requires_gateway(monkeypatch):
+def test_connect_nexuss_api_key_requires_gateway(monkeypatch):
     cfg = _cfg.load_config()
     cfg.sync.gateway_url = ""
     monkeypatch.setattr(pc, "load_config", lambda: cfg)
-    with pytest.raises(ValueError, match="require a gateway"):
+    with pytest.raises(ValueError, match="requires a Paradox gateway"):
         connect(
-            url="parad://alice@example.com:secretpw@local/myproj/mydb"
+            url="parad://nxa_test_key@local/myproj/mydb"
             "?passphrase=secret",
             auto_sync=False,
         )

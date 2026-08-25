@@ -17,6 +17,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .database import get_db
+from .nexuss_auth import provision_nexuss_user, verify_nexuss_api_key
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
@@ -63,6 +64,14 @@ async def get_current_user(
 
     if not api_key:
         raise HTTPException(status_code=401, detail="Missing X-API-Key header")
+
+    # A Nexuss project token is valid directly for Paradox requests. CLI and
+    # SDK clients normally exchange it once for a Paradox pk_ key so they do
+    # not persist the external credential in local configuration.
+    if api_key.startswith("nxa_"):
+        user = await provision_nexuss_user(await verify_nexuss_api_key(api_key), db)
+        request.state.user_id = str(user.id)
+        return user
 
     now = datetime.utcnow()
     key_hash = hash_api_key(api_key)

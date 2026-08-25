@@ -12,6 +12,10 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     api_key_salt: str = "change-me-in-production"
     jwt_secret: str = "change-me-in-production"
+    # Paradox validates Nexuss project tokens over HTTPS. These are public
+    # routing values, not Nexuss admin credentials or provider secrets.
+    nexuss_auth_url: str = ""
+    nexuss_auth_project_id: str = ""
     # Base64 Fernet key for encrypting canonical database_url metadata.
     # If empty, the implementation derives a stable key from JWT_SECRET.
     database_url_encryption_key: str = ""
