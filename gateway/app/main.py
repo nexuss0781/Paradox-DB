@@ -11,7 +11,7 @@ from app.database import close_db, init_db
 from app.halt import maybe_halt_on_rate_limit
 from app.logging_config import setup_logging
 from app.metrics import MetricsMiddleware, get_metrics
-from app.routers import auth, databases, health, notifications, projects, test
+from app.routers import auth, databases, health, notifications, projects, sql, test
 from app.services.telegram import (
     TelegramError,
     TelegramRateLimitError,
@@ -19,19 +19,22 @@ from app.services.telegram import (
     TelegramUnauthorizedError,
 )
 from app.telegram_logger import log_operation
+from app.routers.sql import session_store
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     setup_logging()
     await init_db()
+    session_store.start()
     yield
+    await session_store.stop()
     await close_db()
 
 
 app = FastAPI(
     title="Paradox-DB Gateway",
-    version="2.1.1",
+    version="2.5.6",
     description="Web Gateway for Telegram-synced SQLite database",
     lifespan=lifespan,
 )
@@ -125,9 +128,10 @@ app.include_router(test.router, tags=["test"])
 app.include_router(notifications.router, tags=["notifications"])
 app.include_router(projects.router, tags=["projects"])
 app.include_router(databases.router, tags=["databases"])
+app.include_router(sql.router, tags=["sql"])
 
 
 @app.get("/")
 async def root():
     await log_operation("gateway", "Gateway info requested", "info")
-    return {"service": "paradox-db-gateway", "version": "2.1.1"}
+    return {"service": "paradox-db-gateway", "version": "2.5.6"}
