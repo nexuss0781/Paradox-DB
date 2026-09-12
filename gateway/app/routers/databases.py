@@ -358,6 +358,7 @@ async def create_backup(
         file_hash=paradox_db.file_hash or "",
         file_size=0,
         message_id=paradox_db.latest_message_id,
+        file_id=paradox_db.latest_file_id,
         created_at=datetime.utcnow(),
     )
 
@@ -371,6 +372,8 @@ async def create_backup(
     ver = ver_result.scalar_one_or_none()
     if ver:
         backup.file_size = ver.file_size
+        if ver.file_id:
+            backup.file_id = ver.file_id
 
     db.add(backup)
     await db.flush()
@@ -447,7 +450,7 @@ async def restore_backup(
         )
     )
     ver = ver_result.scalar_one_or_none()
-    if not ver or not ver.message_id:
+    if not ver or not (ver.message_id or ver.file_id):
         raise HTTPException(status_code=404, detail="Version data not found in Telegram")
 
     # Download from Telegram
@@ -457,9 +460,10 @@ async def restore_backup(
         api_hash=settings.telegram_api_hash,
     )
     try:
-        file_bytes = await tg.download_file(
+        file_bytes = await tg.download_best(
             channel_id=settings.telegram_storage_chat_id,
             message_id=ver.message_id,
+            file_id=ver.file_id or "",
         )
     except TelegramError as e:
         return _telegram_error_response(e)
@@ -485,7 +489,7 @@ async def restore_backup(
         api_hash=settings.telegram_api_hash,
     )
     try:
-        msg_id = await tg_upload.upload_file(
+        msg_id, file_id = await tg_upload.upload_file_with_file_id(
             settings.telegram_storage_chat_id, file_bytes, caption
         )
     except Exception as e:
@@ -494,6 +498,7 @@ async def restore_backup(
     # Update DB record
     paradox_db.latest_version = new_version
     paradox_db.latest_message_id = msg_id
+    paradox_db.latest_file_id = file_id or None
     paradox_db.file_hash = file_hash
     paradox_db.updated_at = datetime.utcnow()
 
@@ -505,6 +510,7 @@ async def restore_backup(
         file_hash=file_hash,
         file_size=len(file_bytes),
         message_id=msg_id,
+        file_id=file_id or None,
         notes=f"Restored from backup '{backup.name}' (v{backup.version_number})",
         created_by=user.id,
         created_at=datetime.utcnow(),
@@ -686,10 +692,12 @@ async def upload(
             if storage_chat_id and storage_chat_id != settings.telegram_storage_chat_id:
                 storage_targets.append(storage_chat_id)
             message_id = ""
+            file_id = ""
             for idx, chat_id in enumerate(storage_targets):
-                mid = await tg.upload_file(chat_id, file_bytes, caption)
+                mid, fid = await tg.upload_file_with_file_id(chat_id, file_bytes, caption)
                 if idx == 0:
                     message_id = mid
+                    file_id = fid
         except TelegramRateLimitError as e:
             return _telegram_error_response(e)
         except TelegramError as e:
@@ -712,6 +720,7 @@ async def upload(
         # Update database record
         paradox_db.latest_version = new_version
         paradox_db.latest_message_id = message_id
+        paradox_db.latest_file_id = file_id or None
         paradox_db.file_hash = file_hash
         paradox_db.updated_at = datetime.utcnow()
 
@@ -723,6 +732,7 @@ async def upload(
             file_hash=file_hash,
             file_size=len(file_bytes),
             message_id=message_id,
+            file_id=file_id or None,
             created_by=uid,
             created_at=datetime.utcnow(),
         )
@@ -821,12 +831,14 @@ async def download(
         if not ver:
             raise HTTPException(status_code=404, detail="Version not found")
         message_id = ver.message_id
+        file_id = ver.file_id or ""
         resolved_version = ver.version_number
     else:
         message_id = paradox_db.latest_message_id
+        file_id = paradox_db.latest_file_id or ""
         resolved_version = paradox_db.latest_version
 
-    if not message_id:
+    if not message_id and not file_id:
         raise HTTPException(status_code=404, detail="No file data available")
 
     tg = TelegramClient(
@@ -835,9 +847,10 @@ async def download(
         api_hash=settings.telegram_api_hash,
     )
     try:
-        file_bytes = await tg.download_file(
+        file_bytes = await tg.download_best(
             channel_id=settings.telegram_storage_chat_id,
             message_id=message_id,
+            file_id=file_id,
         )
     except TelegramError as e:
         return _telegram_error_response(e)
@@ -961,7 +974,7 @@ async def legacy_rollback(
         )
     )
     ver = ver_result.scalar_one_or_none()
-    if not ver or not ver.message_id:
+    if not ver or not (ver.message_id or ver.file_id):
         return JSONResponse(status_code=404, content={"error": "version_not_found"})
 
     # Download from Telegram
@@ -971,9 +984,10 @@ async def legacy_rollback(
         api_hash=settings.telegram_api_hash,
     )
     try:
-        file_bytes = await tg.download_file(
+        file_bytes = await tg.download_best(
             channel_id=settings.telegram_storage_chat_id,
             message_id=ver.message_id,
+            file_id=ver.file_id or "",
         )
     except TelegramError as e:
         return _telegram_error_response(e)
@@ -997,10 +1011,12 @@ async def legacy_rollback(
         if storage_chat_id and storage_chat_id != settings.telegram_storage_chat_id:
             targets.append(storage_chat_id)
         msg_id = ""
+        file_id = ""
         for idx, chat_id in enumerate(targets):
-            mid = await tg.upload_file(chat_id, file_bytes, caption)
+            mid, fid = await tg.upload_file_with_file_id(chat_id, file_bytes, caption)
             if idx == 0:
                 msg_id = mid
+                file_id = fid
     except TelegramError as e:
         return _telegram_error_response(e)
     except Exception as e:
@@ -1009,6 +1025,7 @@ async def legacy_rollback(
     # Update records
     paradox_db.latest_version = new_version
     paradox_db.latest_message_id = msg_id
+    paradox_db.latest_file_id = file_id or None
     paradox_db.file_hash = file_hash
     paradox_db.updated_at = datetime.utcnow()
 
@@ -1019,6 +1036,7 @@ async def legacy_rollback(
         file_hash=file_hash,
         file_size=len(file_bytes),
         message_id=msg_id,
+        file_id=file_id or None,
         notes=f"Rollback to v{target_version}",
         created_by=user.id,
         created_at=datetime.utcnow(),

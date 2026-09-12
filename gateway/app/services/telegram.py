@@ -286,6 +286,22 @@ class TelegramClient:
                 raise TelegramServerError(f"Download failed (HTTP {resp2.status_code})")
             return resp2.content
 
+    async def download_best(
+        self, channel_id: str, message_id: str, file_id: str = ""
+    ) -> bytes:
+        """Download a snapshot, preferring the stored Telegram file_id.
+
+        `file_id` keeps working regardless of channel membership or message
+        age, so it is the durable path. When a file_id is unknown or stale
+        (legacy rows), fall back to the message_id lookup via forwardMessage.
+        """
+        if file_id:
+            try:
+                return await self.download_file_by_id(file_id)
+            except (TelegramNotFoundError, TelegramPermanentError):
+                pass
+        return await self.download_file(channel_id=channel_id, message_id=message_id)
+
     async def get_file_metadata(
         self, channel_id: str, message_id: str
     ) -> dict:
