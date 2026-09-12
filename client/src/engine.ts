@@ -361,6 +361,79 @@ export class ClientEngine {
 
   // ── public API ─────────────────────────────────────────────────
 
+  /** Execute SQL and return rows for queries and DML with RETURNING. */
+  executeRaw(sql: string, params?: any[]): any[] {
+    if (!this.db) throw new DatabaseNotOpenError();
+    const trimmed = sql.trim().toUpperCase();
+    if (trimmed.startsWith('SELECT') || trimmed.startsWith('PRAGMA') || trimmed.startsWith('EXPLAIN')) {
+      return this.queryAll(sql, params);
+    }
+    if (!/\bRETURNING\b/.test(trimmed)) {
+      return this.execute(sql, params).rows;
+    }
+
+    const beforeLen = this.journalLen;
+    const txnBefore = this.updateTxnDepth(trimmed);
+    this.seq += 1;
+    try {
+      this.appendJournal(sql, params ?? []);
+      const stmt = this.db.prepare(sql);
+      const rows: any[] = [];
+      try {
+        stmt.bind(params ?? []);
+        while (stmt.step()) rows.push(stmt.getAsObject());
+      } finally {
+        stmt.free();
+      }
+      if (this.inTx === 0) this.syncJournal();
+      this._opCount++;
+      if (this.journalLen > JOURNAL_CHECKPOINT_BYTES && this.inTx === 0) this.checkpoint();
+      return rows;
+    } catch (err) {
+      this.seq -= 1;
+      this.inTx = txnBefore;
+      this.truncateJournalTo(beforeLen);
+      throw new SQLiteError(err instanceof Error ? err.message : String(err), err as Error);
+    }
+  }
+
+  /** Execute SQL and return positional SQLite rows for Drizzle and proxy adapters. */
+  executeRawValues(sql: string, params?: any[]): any[][] {
+    if (!this.db) throw new DatabaseNotOpenError();
+    const trimmed = sql.trim().toUpperCase();
+    if (trimmed.startsWith('SELECT') || trimmed.startsWith('PRAGMA') || trimmed.startsWith('EXPLAIN')) {
+      return this.queryValues(sql, params);
+    }
+    if (!/\bRETURNING\b/.test(trimmed)) {
+      this.execute(sql, params);
+      return [];
+    }
+
+    const beforeLen = this.journalLen;
+    const txnBefore = this.updateTxnDepth(trimmed);
+    this.seq += 1;
+    try {
+      this.appendJournal(sql, params ?? []);
+      const stmt = this.db.prepare(sql);
+      const rows: any[][] = [];
+      try {
+        stmt.bind(params ?? []);
+        while (stmt.step()) rows.push(stmt.get() as any[]);
+      } finally {
+        stmt.free();
+      }
+      if (this.inTx === 0) this.syncJournal();
+      this._opCount++;
+      if (this.journalLen > JOURNAL_CHECKPOINT_BYTES && this.inTx === 0) this.checkpoint();
+      return rows;
+    } catch (err) {
+      this.seq -= 1;
+      this.inTx = txnBefore;
+      this.truncateJournalTo(beforeLen);
+      throw new SQLiteError(err instanceof Error ? err.message : String(err), err as Error);
+    }
+  }
+
   execute(sql: string, params?: any[]): { rows: any[]; changes: number; lastInsertRowid: number } {
     if (!this.db) throw new DatabaseNotOpenError();
     const trimmed = sql.trim().toUpperCase();
@@ -403,6 +476,18 @@ export class ClientEngine {
       return { rows: [], changes, lastInsertRowid };
     } catch (err) {
       throw new SQLiteError(err instanceof Error ? err.message : String(err), err as Error);
+    }
+  }
+
+  private queryValues(sql: string, params?: any[]): any[][] {
+    const stmt = this.db!.prepare(sql);
+    try {
+      if (params && params.length > 0) stmt.bind(params);
+      const rows: any[][] = [];
+      while (stmt.step()) rows.push(stmt.get() as any[]);
+      return rows;
+    } finally {
+      stmt.free();
     }
   }
 

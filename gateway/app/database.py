@@ -1,44 +1,30 @@
 from collections.abc import AsyncGenerator
-from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 from sqlalchemy.orm import DeclarativeBase
 
 from app.config import settings
+from app.database_url import prepare_async_database_url
 
 
-def _prepare_database_url(url: str) -> str:
-    parsed = urlparse(url)
-    params = parse_qs(parsed.query)
-
-    sslmode = params.pop("sslmode", None)
-    connect_args = {}
-
-    if sslmode:
-        ssl_value = sslmode[0] if isinstance(sslmode, list) else sslmode
-        if ssl_value == "require":
-            connect_args["ssl"] = "require"
-        elif ssl_value in ("prefer", "allow"):
-            connect_args["ssl"] = "prefer"
-        elif ssl_value in ("disable", "none"):
-            connect_args["ssl"] = False
-        else:
-            connect_args["ssl"] = "require"
-
-    new_query = urlencode(params, doseq=True)
-    return urlunparse(parsed._replace(query=new_query)), connect_args
+def create_database_engine(database_url: str) -> AsyncEngine:
+    db_url, ssl_kwargs = prepare_async_database_url(database_url)
+    return create_async_engine(
+        db_url,
+        echo=False,
+        pool_size=10,
+        max_overflow=20,
+        connect_args=ssl_kwargs if ssl_kwargs else {},
+    )
 
 
-_db_url, _ssl_kwargs = _prepare_database_url(settings.database_url)
-
-engine = create_async_engine(
-    _db_url,
-    echo=False,
-    pool_size=10,
-    max_overflow=20,
-    connect_args=_ssl_kwargs if _ssl_kwargs else {},
-)
+engine = create_database_engine(settings.database_url)
 
 async_session_factory = async_sessionmaker(
     engine,
@@ -68,8 +54,32 @@ async def init_db() -> None:
             text("ALTER TABLE users ADD COLUMN IF NOT EXISTS api_key_hash VARCHAR(64)")
         )
         await conn.execute(
+            text("ALTER TABLE users ADD COLUMN IF NOT EXISTS nexuss_user_id VARCHAR(128)")
+        )
+        await conn.execute(
+            text("CREATE UNIQUE INDEX IF NOT EXISTS ux_users_nexuss_user_id ON users (nexuss_user_id)")
+        )
+        await conn.execute(text("ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL"))
+        await conn.execute(
             text("CREATE UNIQUE INDEX IF NOT EXISTS ux_users_api_key_hash ON users (api_key_hash)")
         )
+        await conn.execute(
+            text("ALTER TABLE paradox_dbs ADD COLUMN IF NOT EXISTS database_url_encrypted TEXT")
+        )
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS api_keys (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                name VARCHAR(100) NOT NULL,
+                key_hash VARCHAR(64) NOT NULL UNIQUE,
+                created_at TIMESTAMP NOT NULL DEFAULT now(),
+                last_used_at TIMESTAMP NULL,
+                expires_at TIMESTAMP NULL,
+                revoked_at TIMESTAMP NULL
+            )
+        """))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_api_keys_user_id ON api_keys (user_id)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_api_keys_active_lookup ON api_keys (key_hash, revoked_at, expires_at)"))
 
 
 async def close_db() -> None:

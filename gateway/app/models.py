@@ -11,6 +11,7 @@ from sqlalchemy import (
     String,
     Text,
 )
+from sqlalchemy.sql import func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
@@ -28,7 +29,10 @@ class User(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     email = Column(String(255), unique=True, nullable=False)
     username = Column(String(100), unique=True, nullable=False)
-    password_hash = Column(String(255), nullable=False)
+    # Native password login has been retired. Existing hashes remain readable
+    # for migration, while Nexuss-provisioned users have no local password.
+    password_hash = Column(String(255), nullable=True)
+    nexuss_user_id = Column(String(128), unique=True, nullable=True)
     api_key_hash = Column(String(64), unique=True, nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
@@ -38,6 +42,22 @@ class User(Base):
     databases = relationship("ParadoxDB", back_populates="user", lazy="selectin", foreign_keys="ParadoxDB.user_id")
     sync_logs = relationship("SyncLog", back_populates="user", lazy="selectin")
     conflict_logs = relationship("ConflictLog", back_populates="user", lazy="selectin")
+    api_keys = relationship("APIKey", back_populates="user", cascade="all, delete-orphan", lazy="selectin")
+
+
+class APIKey(Base):
+    __tablename__ = "api_keys"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    name = Column(String(100), nullable=False)
+    key_hash = Column(String(64), unique=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    last_used_at = Column(DateTime, nullable=True)
+    expires_at = Column(DateTime, nullable=True)
+    revoked_at = Column(DateTime, nullable=True)
+
+    user = relationship("User", back_populates="api_keys")
 
 
 class Project(Base):
@@ -68,6 +88,8 @@ class ParadoxDB(Base):
     file_hash = Column(String(64), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    # Secret-bearing canonical URL, encrypted with the gateway deployment key.
+    database_url_encrypted = Column(Text, nullable=True)
 
     project = relationship("Project", back_populates="databases")
     user = relationship("User", back_populates="databases", foreign_keys=[user_id])
@@ -168,6 +190,29 @@ class AuthResponse(BaseModel):
     api_key: str
 
 
+class NexussApiKeyExchangeRequest(BaseModel):
+    api_key: str
+
+
+class NexussHandoffExchangeRequest(BaseModel):
+    handoff_token: str
+
+
+class APIKeyCreateRequest(BaseModel):
+    name: str = "default"
+    expires_at: str | None = None
+
+
+class APIKeyResponse(BaseModel):
+    id: str
+    name: str
+    created_at: str
+    last_used_at: str | None
+    expires_at: str | None
+    revoked_at: str | None
+    api_key: str | None = None
+
+
 class UserResponse(BaseModel):
     id: str
     email: str
@@ -220,6 +265,18 @@ class DatabaseResponse(BaseModel):
     file_hash: str | None
     created_at: str
     updated_at: str
+    has_database_url: bool = False
+
+
+class DatabaseUrlWrite(BaseModel):
+    database_url: str
+
+
+class DatabaseUrlResponse(BaseModel):
+    database_id: str
+    database_url: str | None = None
+    configured: bool = False
+    redacted: bool = True
 
 
 # -- Versions --

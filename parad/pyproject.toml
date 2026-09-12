@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "parad"
-version = "2.3.0"
+version = "2.2.6"
 description = "Drop-in encrypted database with cloud sync — connect() and go"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -30,11 +30,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-alchemy = ["sqlalchemy>=2.0"]
+sqlalchemy = ["SQLAlchemy>=2.0"]
 
 [project.entry-points."sqlalchemy.dialects"]
-"parad" = "parad.dialect:ParadDialect"
-"parad.remote" = "parad.dialect:ParadDialect"
+parad = "parad.sqlalchemy:ParadDialect"
 
 [project.urls]
 Homepage = "https://github.com/nexuss0781/Paradox-DB"

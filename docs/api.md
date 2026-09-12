@@ -2,41 +2,64 @@
 
 Base URL: `https://your-domain.com/v1`
 
-Authentication: `X-API-Key` header or `Authorization: Bearer <jwt>`
+Authentication uses the `X-API-Key` header. Paradox `pk_` keys are accepted normally. A verified Nexuss `nxa_` key may be supplied directly only for trusted server-to-server clients; CLI and SDK clients should exchange it once and persist the returned Paradox key instead. Do not use `Authorization: Bearer` for Paradox gateway requests.
 
 ---
 
 ## Health Check
 
-```
+```text
 GET /health
 ```
 
 **Response:** `200 OK`
+
 ```json
-{"status": "healthy"}
+{"status":"healthy"}
 ```
 
 ---
 
-## Authentication
+## Nexuss Auth
 
-### Register
+Interactive Google sign-in is performed by the configured Nexuss project. The Paradox gateway only validates the resulting Nexuss identity; it never receives Google client credentials.
 
+### Exchange a Nexuss API key
+
+```text
+POST /v1/auth/nexuss/exchange
+Content-Type: application/json
 ```
-POST /v1/auth/register
-```
 
-Register a new user and receive an API key.
+```json
+{"api_key":"nxa_..."}
+```
 
 **Response:** `200 OK`
+
 ```json
 {
   "user_id": "uuid",
-  "api_key": "pk_...",
-  "channel_id": ""
+  "email": "user@example.com",
+  "username": "user-identity",
+  "api_key": "pk_..."
 }
 ```
+
+The Nexuss key is verified against `NEXUSS_AUTH_PROJECT_ID` and is not persisted by Paradox. Store only the returned `pk_` key.
+
+### Exchange a trusted browser handoff
+
+```text
+POST /v1/auth/nexuss/handoff
+Content-Type: application/json
+```
+
+```json
+{"handoff_token":"one-time-token"}
+```
+
+This endpoint is for a trusted Paradox server callback after Nexuss Google sign-in with `handoff=1`. A handoff token is single-use and must never be exposed to browser code, logs, or URLs.
 
 ---
 
@@ -44,11 +67,13 @@ Register a new user and receive an API key.
 
 ### Upload (Push)
 
-```
+```text
 POST /v1/upload
-Authorization: Bearer <token>
+X-API-Key: pk_...
 Content-Type: application/json
+```
 
+```json
 {
   "database_name": "mydb",
   "file_data": "<base64-encoded-sqlite>",
@@ -58,6 +83,7 @@ Content-Type: application/json
 ```
 
 **Response:** `200 OK`
+
 ```json
 {
   "request_id": "uuid",
@@ -67,89 +93,33 @@ Content-Type: application/json
 }
 ```
 
-**Errors:**
-- `409` — Conflict detected (version mismatch)
-- `429` — Rate limited
-- `502` — Telegram upload failed
+**Errors:** `401` invalid key, `409` version conflict, `429` rate limited, `502` upstream upload failure.
 
 ### Download (Pull)
 
-```
+```text
 GET /v1/download?database_name=mydb&version=latest
-Authorization: Bearer <token>
+X-API-Key: pk_...
 ```
 
-**Response:** `200 OK` — Binary SQLite file
+**Response:** `200 OK` — Binary SQLite file.
 
-### Versions
+### Versions, rollback, and status
 
-```
-GET /v1/versions?database_name=mydb
-Authorization: Bearer <token>
-```
+All authenticated requests use `X-API-Key: pk_...`:
 
-**Response:** `200 OK`
-```json
-{
-  "database_name": "mydb",
-  "versions": [
-    {"version": 1, "message_id": "100", "uploaded_at": "...", "size_bytes": 8192},
-    {"version": 2, "message_id": "200", "uploaded_at": "...", "size_bytes": 12288}
-  ]
-}
-```
-
-### Rollback
-
-```
+```text
+GET  /v1/versions?database_name=mydb
 POST /v1/rollback
-Authorization: Bearer <token>
-Content-Type: application/json
-
-{
-  "database_name": "mydb",
-  "target_version": 1
-}
-```
-
-**Response:** `200 OK`
-```json
-{
-  "request_id": "uuid",
-  "rolled_back_to": 1,
-  "new_message_id": "300"
-}
-```
-
-### Status
-
-```
-GET /v1/status
-Authorization: Bearer <token>
-```
-
-**Response:** `200 OK`
-```json
-{
-  "user_id": "uuid",
-  "databases": [
-    {
-      "name": "mydb",
-      "latest_version": 3,
-      "latest_message_id": "300",
-      "pending_changesets": 0,
-      "last_sync_at": "2026-07-23T12:00:00Z"
-    }
-  ]
-}
+GET  /v1/status
 ```
 
 ---
 
 ## Rate Limits
 
-| Endpoint | Limit | Burst |
-|----------|-------|-------|
+| Endpoint family | Limit | Burst |
+|---|---:|---:|
 | `/v1/upload` | 15/min | 20 |
 | `/v1/auth/*` | 10/min | 5 |
 | Other | 60/min | 20 |

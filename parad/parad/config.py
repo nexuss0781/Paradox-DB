@@ -10,6 +10,11 @@ CONFIG_DIR = Path(os.environ.get("PARADOX_HOME", "~/.paradox")).expanduser()
 CONFIG_FILE = CONFIG_DIR / "config.json"
 
 
+def config_file() -> Path:
+    """Return the current config path, honoring runtime PARADOX_HOME changes."""
+    return config_dir() / "config.json"
+
+
 def config_dir() -> Path:
     """Return the current config directory.
 
@@ -19,6 +24,7 @@ def config_dir() -> Path:
     return Path(os.environ.get("PARADOX_HOME", "~/.paradox")).expanduser()
 
 DEFAULT_CONFIG = {
+    "database_url": "",
     "database_path": "~/.paradox/data.db",
     "encryption": {
         "cipher": "aes-256-cbc",
@@ -73,15 +79,17 @@ def load_config() -> Config:
     - PARADOX_GATEWAY    → sync.gateway_url
     - PARADOX_DATABASE   → database_path
     - PARADOX_API_KEY    → sync.api_key
+    - DATABASE_URL       → canonical Parad connection URL
 
     .env files are loaded automatically if python-dotenv is installed.
     """
     _load_dotenv()
 
     user_config = {}
-    if CONFIG_FILE.exists():
+    config_path = config_file()
+    if config_path.exists():
         try:
-            user_config = json.loads(CONFIG_FILE.read_text())
+            user_config = json.loads(config_path.read_text())
         except (json.JSONDecodeError, OSError):
             pass
     merged = _deep_merge(DEFAULT_CONFIG, user_config)
@@ -95,14 +103,17 @@ def load_config() -> Config:
         merged["database_path"] = os.environ["PARADOX_DATABASE"]
     if "PARADOX_API_KEY" in os.environ:
         merged["sync"]["api_key"] = os.environ["PARADOX_API_KEY"]
+    if "DATABASE_URL" in os.environ:
+        merged["database_url"] = os.environ["DATABASE_URL"]
 
     return Config(**merged)
 
 
 def save_config(config: Config):
     """Save config to ~/.paradox/config.json."""
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    CONFIG_FILE.write_text(json.dumps(config.model_dump(), indent=2))
+    path = config_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(config.model_dump(), indent=2))
 
 
 def set_config_value(key: str, value: str):
@@ -141,10 +152,158 @@ def get_passphrase() -> str:
     return config.encryption.passphrase
 
 
-def get_connection_url(name: str) -> str:
-    """Get a connection URL for a database.
-    
-    Returns: parad://local/{name}?passphrase={passphrase}
+def get_canonical_database_url(name: str | None = None) -> str:
+    """Return the canonical single-value database URL.
+
+    Precedence is ``DATABASE_URL`` environment variable, then the persisted
+    ``database_url`` config field, then legacy split fields. When the legacy
+    fields are sufficient, the reconstructed URL is persisted immediately so
+    later processes can use the canonical value only.
     """
-    passphrase = get_passphrase()
-    return f"parad://local/{name}?passphrase={passphrase}"
+    config = load_config()
+    configured = os.environ.get("DATABASE_URL", "").strip() or config.database_url.strip()
+    if configured:
+        from parad.connection import parse_url
+
+        parsed = parse_url(configured)
+        if name and parsed["name"] != name:
+            raise ValueError(
+                f"Canonical DATABASE_URL points to '{parsed['name']}', not '{name}'"
+            )
+        return configured
+
+    inferred_name = name or gateway_db_name(config.database_path)
+    if not inferred_name:
+        raise ValueError("No database name is configured; run parad init <name> first")
+
+    passphrase = os.environ.get("PARADOX_PASSPHRASE", "").strip() or config.encryption.passphrase.strip()
+    gateway_url = os.environ.get("PARADOX_GATEWAY", "").strip() or config.sync.gateway_url.strip()
+    api_key = os.environ.get("PARADOX_API_KEY", "").strip() or config.sync.api_key.strip()
+    if gateway_url and not passphrase:
+        raise ValueError(
+            f"No passphrase is configured for '{inferred_name}'. Set PARADOX_PASSPHRASE "
+            "or recover DATABASE_URL from the original provisioning output."
+        )
+
+    from parad.connection import generate_url
+
+    canonical = generate_url(
+        inferred_name,
+        passphrase,
+        gateway_url,
+        config.project_name or None,
+        api_key,
+    )
+    config.database_url = canonical
+    save_config(config)
+    return canonical
+
+
+def recover_canonical_database_url(name: str | None = None) -> str:
+    """Recover database_url from the server, then fall back locally.
+
+    The gateway lookup is read-only and requires the configured API key. The
+    gateway returns the URL only through the explicit owner-authenticated
+    reveal endpoint; a successful result is persisted locally.
+    """
+    config = load_config()
+    configured = os.environ.get("DATABASE_URL", "").strip() or config.database_url.strip()
+    if configured:
+        from parad.connection import parse_url
+
+        parsed = parse_url(configured)
+        if name and parsed["name"] != name:
+            raise ValueError(
+                f"Canonical DATABASE_URL points to '{parsed['name']}', not '{name}'"
+            )
+        return configured
+
+    inferred_name = name or gateway_db_name(config.database_path)
+    gateway_url = os.environ.get("PARADOX_GATEWAY", "").strip() or config.sync.gateway_url.strip()
+    api_key = os.environ.get("PARADOX_API_KEY", "").strip() or config.sync.api_key.strip()
+    if gateway_url and api_key:
+        from parad.gateway import GatewayClient, GatewayError
+
+        gateway = GatewayClient(gateway_url, api_key)
+        database_id = config.database_id.strip()
+        if not database_id:
+            projects = gateway.list_projects()
+            project = next(
+                (item for item in projects if not config.project_name or item.get("name") == config.project_name),
+                None,
+            )
+            if project:
+                databases = gateway.list_databases(project["id"])
+                database = next((item for item in databases if item.get("name") == inferred_name), None)
+                if database:
+                    database_id = database["id"]
+                    config.project_id = project["id"]
+                    config.project_name = project.get("name", config.project_name)
+        if database_id:
+            try:
+                response = gateway.get_database_url(database_id, reveal=True)
+                recovered = response.get("database_url")
+                if recovered:
+                    from parad.connection import parse_url
+
+                    parsed = parse_url(recovered)
+                    if name and parsed["name"] != name:
+                        raise ValueError(
+                            f"Recovered DATABASE_URL points to '{parsed['name']}', not '{name}'"
+                        )
+                    config.database_url = recovered
+                    config.database_id = database_id
+                    save_config(config)
+                    return recovered
+            except GatewayError as exc:
+                if exc.status_code not in (404, 405, 501):
+                    raise
+
+    return get_canonical_database_url(name)
+
+
+def register_canonical_database_url(database_url: str) -> str:
+    """Explicitly register a locally known canonical URL on the owner gateway.
+
+    This is the migration path for databases created before server URL storage;
+    it only updates the encrypted URL field and never initializes or snapshots
+    the database.
+    """
+    config = load_config()
+    from parad.connection import parse_url
+
+    parsed = parse_url(database_url)
+    gateway_url = parsed.get("gateway_url", "").strip() or os.environ.get("PARADOX_GATEWAY", "").strip() or config.sync.gateway_url.strip()
+    api_key = os.environ.get("PARADOX_API_KEY", "").strip() or config.sync.api_key.strip() or parsed.get("token", "").strip()
+    if not gateway_url or not api_key:
+        raise ValueError("A gateway URL and owner API key are required to register DATABASE_URL")
+
+    from parad.gateway import GatewayClient
+
+    gateway = GatewayClient(gateway_url, api_key)
+    project_id = config.project_id.strip()
+    project_name = parsed.get("project") or config.project_name.strip()
+    if not project_id:
+        projects = gateway.list_projects()
+        project = next((item for item in projects if not project_name or item.get("name") == project_name), None)
+        if not project:
+            raise ValueError(f"Could not find project '{project_name or '(unspecified)'}'")
+        project_id = project["id"]
+        project_name = project.get("name", project_name)
+    databases = gateway.list_databases(project_id)
+    database = next((item for item in databases if item.get("name") == parsed["name"]), None)
+    if not database:
+        raise ValueError(f"Could not find database '{parsed['name']}' in project '{project_name or project_id}'")
+    gateway.set_database_url(database["id"], database_url)
+    config.database_url = database_url
+    config.database_id = database["id"]
+    config.project_id = project_id
+    if project_name:
+        config.project_name = project_name
+    save_config(config)
+    return database_url
+
+
+def get_connection_url(name: str) -> str:
+    """Backward-compatible alias for :func:`get_canonical_database_url`."""
+    return get_canonical_database_url(name)

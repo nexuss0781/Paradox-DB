@@ -1,5 +1,8 @@
-import { describe, it, expect } from 'vitest';
-import { parseUrl, generateUrl, dbStateKey } from '../src/connection.js';
+import { afterEach, describe, it, expect } from 'vitest';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { vi } from 'vitest';
+import { join } from 'node:path';
+import { parseUrl, generateUrl, redactUrl, getCanonicalDatabaseUrl, recoverCanonicalDatabaseUrl, registerCanonicalDatabaseUrl, dbStateKey } from '../src/connection.js';
 import { GatewayError, isConnectivityError } from '../src/gateway.js';
 
 describe('parseUrl', () => {
@@ -11,8 +14,6 @@ describe('parseUrl', () => {
       passphrase: 'secret',
       gateway_url: '',
       token: '',
-      email: '',
-      password: '',
     });
   });
 
@@ -28,18 +29,13 @@ describe('parseUrl', () => {
     expect(p.token).toBe('tok-abc');
   });
 
-  it('parses email:password in userinfo', () => {
-    const p = parseUrl('parad://alice@example.com:secretpw@local/myproj/mydb?passphrase=secret');
-    expect(p.email).toBe('alice@example.com');
-    expect(p.password).toBe('secretpw');
-    expect(p.token).toBe('');
+  it('rejects email:password in userinfo', () => {
+    expect(() => parseUrl('parad://alice@example.com:secretpw@local/myproj/mydb?passphrase=secret')).toThrow(/retired/);
   });
 
   it('parses token in userinfo', () => {
     const p = parseUrl('parad://tok-abc@local/myproj/mydb?passphrase=secret');
     expect(p.token).toBe('tok-abc');
-    expect(p.email).toBe('');
-    expect(p.password).toBe('');
   });
 
   it('parses nested project path', () => {
@@ -67,13 +63,6 @@ describe('generateUrl', () => {
     expect(p.gateway_url).toBe('https://g/v1');
   });
 
-  it('round-trips an email:password form', () => {
-    const url = generateUrl('mydb', 'secret', 'https://g/v1', 'proj', '', 'alice@example.com', 'pw');
-    const p = parseUrl(url);
-    expect(p.email).toBe('alice@example.com');
-    expect(p.password).toBe('pw');
-  });
-
   it('produces a local-only URL', () => {
     const url = generateUrl('mydb', 'secret');
     expect(url).toBe('parad://local/mydb?passphrase=secret');
@@ -82,6 +71,125 @@ describe('generateUrl', () => {
   it('omits query params that are empty', () => {
     const url = generateUrl('mydb');
     expect(url).toBe('parad://local/mydb');
+  });
+});
+
+describe('redactUrl', () => {
+  it('removes credentials while preserving the database target', () => {
+    const redacted = redactUrl('parad://token-abc@local/proj/mydb?gateway=https://g/v1&passphrase=secret');
+    expect(redacted).toBe('parad://%3Credacted%3E@local/proj/mydb?gateway=https%3A%2F%2Fg%2Fv1');
+    expect(redacted).not.toContain('token-abc');
+    expect(redacted).not.toContain('secret');
+  });
+});
+
+describe('getCanonicalDatabaseUrl', () => {
+  const originalHome = process.env.PARADOX_HOME;
+  const originalDatabaseUrl = process.env.DATABASE_URL;
+
+  afterEach(() => {
+    if (originalHome === undefined) delete process.env.PARADOX_HOME;
+    else process.env.PARADOX_HOME = originalHome;
+    if (originalDatabaseUrl === undefined) delete process.env.DATABASE_URL;
+    else process.env.DATABASE_URL = originalDatabaseUrl;
+    vi.restoreAllMocks();
+  });
+
+  it('prefers ambient DATABASE_URL', () => {
+    const home = mkdtempSync('/tmp/parad-ts-url-');
+    process.env.PARADOX_HOME = home;
+    process.env.DATABASE_URL = 'parad://local/proj/newdb?passphrase=secret&gateway=https://g/v1';
+    expect(getCanonicalDatabaseUrl()).toBe(process.env.DATABASE_URL);
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it('returns the persisted canonical URL before legacy fields', () => {
+    const home = mkdtempSync('/tmp/parad-ts-url-');
+    process.env.PARADOX_HOME = home;
+    delete process.env.DATABASE_URL;
+    writeFileSync(join(home, 'config.json'), JSON.stringify({ database_url: 'parad://local/proj/db?passphrase=secret' }));
+    expect(getCanonicalDatabaseUrl()).toBe('parad://local/proj/db?passphrase=secret');
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it('recovers and persists the canonical URL from the owner gateway', async () => {
+    const home = mkdtempSync('/tmp/parad-ts-url-');
+    process.env.PARADOX_HOME = home;
+    delete process.env.DATABASE_URL;
+    writeFileSync(join(home, 'config.json'), JSON.stringify({
+      database_path: '~/remote.db',
+      project_name: 'proj',
+      sync: { gateway_url: 'https://g/v1', api_key: 'owner-key' },
+    }));
+    const gatewayModule = await import('../src/gateway.js');
+    vi.spyOn(gatewayModule.GatewayClient.prototype, 'listProjects').mockResolvedValue([{ id: 'p1', name: 'proj' }] as any);
+    vi.spyOn(gatewayModule.GatewayClient.prototype, 'listDatabases').mockResolvedValue([{ id: 'd1', name: 'remote' }] as any);
+    const reveal = vi.spyOn(gatewayModule.GatewayClient.prototype, 'getDatabaseUrl').mockResolvedValue({
+      database_id: 'd1',
+      database_url: 'parad://owner-secret@local/proj/remote?passphrase=secret&gateway=https://g/v1',
+      configured: true,
+      redacted: false,
+    });
+    const recovered = await recoverCanonicalDatabaseUrl();
+    expect(recovered).toContain('parad://owner-secret@');
+    expect(reveal).toHaveBeenCalledWith('d1', true);
+    expect(JSON.parse(readFileSync(join(home, 'config.json'), 'utf8')).database_url).toBe(recovered);
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it('falls back safely when the gateway has no recovery endpoint', async () => {
+    const home = mkdtempSync('/tmp/parad-ts-url-');
+    process.env.PARADOX_HOME = home;
+    delete process.env.DATABASE_URL;
+    writeFileSync(join(home, 'config.json'), JSON.stringify({
+      database_path: '~/legacy.db',
+      project_name: 'proj',
+      encryption: { passphrase: 'secret' },
+      sync: { gateway_url: 'https://g/v1', api_key: 'token' },
+    }));
+    const gatewayModule = await import('../src/gateway.js');
+    vi.spyOn(gatewayModule.GatewayClient.prototype, 'listProjects').mockResolvedValue([{ id: 'p1', name: 'proj' }] as any);
+    vi.spyOn(gatewayModule.GatewayClient.prototype, 'listDatabases').mockResolvedValue([{ id: 'd1', name: 'legacy' }] as any);
+    vi.spyOn(gatewayModule.GatewayClient.prototype, 'getDatabaseUrl').mockRejectedValue(new GatewayError(404, 'not found'));
+    expect(parseUrl(await recoverCanonicalDatabaseUrl())).toMatchObject({ name: 'legacy', passphrase: 'secret' });
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it('explicitly registers a known URL without opening the database', async () => {
+    const home = mkdtempSync('/tmp/parad-ts-url-');
+    process.env.PARADOX_HOME = home;
+    delete process.env.DATABASE_URL;
+    writeFileSync(join(home, 'config.json'), JSON.stringify({
+      project_id: 'p1',
+      project_name: 'proj',
+      sync: { gateway_url: 'https://g/v1', api_key: 'owner-key' },
+    }));
+    const gatewayModule = await import('../src/gateway.js');
+    vi.spyOn(gatewayModule.GatewayClient.prototype, 'listDatabases').mockResolvedValue([{ id: 'd1', name: 'remote' }] as any);
+    const store = vi.spyOn(gatewayModule.GatewayClient.prototype, 'setDatabaseUrl').mockResolvedValue({
+      database_id: 'd1', database_url: 'parad://<redacted>@local/proj/remote?gateway=https%3A%2F%2Fg%2Fv1', configured: true, redacted: true,
+    });
+    const url = 'parad://owner-secret@local/proj/remote?passphrase=secret&gateway=https://g/v1';
+    expect(await registerCanonicalDatabaseUrl(url)).toBe(url);
+    expect(store).toHaveBeenCalledWith('d1', url);
+    expect(JSON.parse(readFileSync(join(home, 'config.json'), 'utf8')).database_id).toBe('d1');
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it('reconstructs and persists the canonical URL from legacy fields', () => {
+    const home = mkdtempSync('/tmp/parad-ts-url-');
+    process.env.PARADOX_HOME = home;
+    delete process.env.DATABASE_URL;
+    writeFileSync(join(home, 'config.json'), JSON.stringify({
+      database_path: '~/legacy.db',
+      project_name: 'proj',
+      encryption: { passphrase: 'secret' },
+      sync: { gateway_url: 'https://g/v1', api_key: 'token' },
+    }));
+    const url = getCanonicalDatabaseUrl();
+    expect(parseUrl(url)).toMatchObject({ name: 'legacy', project: 'proj', passphrase: 'secret', token: 'token' });
+    expect(JSON.parse(readFileSync(join(home, 'config.json'), 'utf8')).database_url).toBe(url);
+    rmSync(home, { recursive: true, force: true });
   });
 });
 

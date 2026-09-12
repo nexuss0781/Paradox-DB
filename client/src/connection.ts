@@ -13,8 +13,6 @@ export interface ParsedUrl {
   passphrase: string;
   gateway_url: string;
   token: string;
-  email: string;
-  password: string;
 }
 
 // ── URL helpers ─────────────────────────────────────────────────
@@ -36,15 +34,12 @@ export function parseUrl(url: string): ParsedUrl {
   const token = qs.get('token') || '';
 
   let userToken = token;
-  let userEmail = '';
-  let userPassword = '';
   if (parsed.username !== '') {
     const username = decodeURIComponent(parsed.username);
-    const pw = parsed.password ? decodeURIComponent(parsed.password) : '';
-    if (pw || username.includes('@')) {
-      userEmail = username;
-      userPassword = pw;
-    } else if (!userToken) {
+    if (parsed.password || username.includes('@')) {
+      throw new Error('Email/password connection URLs are retired; use a Paradox or Nexuss API key');
+    }
+    if (!userToken) {
       userToken = username;
     }
   }
@@ -62,8 +57,6 @@ export function parseUrl(url: string): ParsedUrl {
     passphrase,
     gateway_url: gatewayUrl,
     token: userToken,
-    email: userEmail,
-    password: userPassword,
   };
 }
 
@@ -73,13 +66,9 @@ export function generateUrl(
   gatewayUrl = '',
   project: string | null = null,
   token = '',
-  email = '',
-  password = '',
 ): string {
   let userinfo = '';
-  if (email && password) {
-    userinfo = `${encodeURIComponent(email).replace(/%40/g, '@')}:${encodeURIComponent(password)}@`;
-  } else if (token) {
+  if (token) {
     userinfo = `${encodeURIComponent(token)}@`;
   }
   const pathname = project ? `local/${project}/${name}` : `local/${name}`;
@@ -87,7 +76,6 @@ export function generateUrl(
   const qs: string[] = [];
   if (passphrase) qs.push(`passphrase=${encodeURIComponent(passphrase)}`);
   if (gatewayUrl) qs.push(`gateway=${encodeURIComponent(gatewayUrl).replace(/%3A/g, ':').replace(/%2F/g, '/')}`);
-  if (token && email && password) qs.push(`token=${encodeURIComponent(token)}`);
   if (qs.length) url += `?${qs.join('&')}`;
   return url;
 }
@@ -95,6 +83,137 @@ export function generateUrl(
 export function dbStateKey(name: string, project: string | null = null): string {
   if (project) return `${project}/${name}`;
   return name;
+}
+
+/** Remove credentials from a Parad URL before displaying it in normal CLI output. */
+export function redactUrl(url: string): string {
+  const parsed = new URL(url);
+  parsed.username = parsed.username ? '<redacted>' : '';
+  parsed.password = '';
+  parsed.searchParams.delete('token');
+  parsed.searchParams.delete('passphrase');
+  return parsed.toString();
+}
+
+/**
+ * Resolve the canonical single-value database URL.
+ *
+ * Precedence is explicit at the call site, then DATABASE_URL, then the
+ * persisted config.database_url. Legacy split fields are used only as a
+ * compatibility fallback and the reconstructed URL is persisted immediately.
+ */
+export function getCanonicalDatabaseUrl(name?: string): string {
+  const config = loadConfig();
+  const configured = process.env.DATABASE_URL?.trim() || config.database_url?.trim() || '';
+  if (configured) {
+    const parsed = parseUrl(configured);
+    if (name && parsed.name !== name) {
+      throw new Error(`Canonical DATABASE_URL points to '${parsed.name}', not '${name}'`);
+    }
+    return configured;
+  }
+
+  const inferredName = name || path.basename(config.database_path).replace(/\.db$/, '');
+  if (!inferredName) throw new Error('No database name is configured; run parad init <name> first');
+  const passphrase = process.env.PARADOX_PASSPHRASE || config.encryption.passphrase || '';
+  const gatewayUrl = process.env.PARADOX_GATEWAY || config.sync.gateway_url || '';
+  const apiKey = process.env.PARADOX_API_KEY || config.sync.api_key || '';
+  if (!passphrase && gatewayUrl) {
+    throw new Error(`No passphrase is configured for '${inferredName}'. Set PARADOX_PASSPHRASE or recover DATABASE_URL from the original provisioning output.`);
+  }
+
+  const canonical = generateUrl(inferredName, passphrase, gatewayUrl, config.project_name || null, apiKey);
+  config.database_url = canonical;
+  saveConfig(config);
+  return canonical;
+}
+
+/**
+ * Recover a canonical URL from the owner-authenticated gateway when it is not
+ * available locally. The server stores it encrypted and reveals it only via
+ * the explicit recovery endpoint.
+ */
+export async function recoverCanonicalDatabaseUrl(name?: string): Promise<string> {
+  const config = loadConfig();
+  const local = process.env.DATABASE_URL?.trim() || config.database_url?.trim() || '';
+  if (local) {
+    const parsed = parseUrl(local);
+    if (name && parsed.name !== name) {
+      throw new Error(`Canonical DATABASE_URL points to '${parsed.name}', not '${name}'`);
+    }
+    return local;
+  }
+
+  const inferredName = name || path.basename(config.database_path).replace(/\.db$/, '');
+  const gatewayUrl = process.env.PARADOX_GATEWAY || config.sync.gateway_url || '';
+  const apiKey = process.env.PARADOX_API_KEY || config.sync.api_key || '';
+  if (!gatewayUrl || !apiKey) return getCanonicalDatabaseUrl(name);
+
+  const gateway = new GatewayClient(gatewayUrl, apiKey);
+  let databaseId = config.database_id || '';
+  if (!databaseId) {
+    const projects = (await gateway.listProjects()) as { id: string; name: string }[];
+    const project = projects.find((entry) => !config.project_name || entry.name === config.project_name);
+    if (!project) return getCanonicalDatabaseUrl(name);
+    const databases = (await gateway.listDatabases(project.id)) as { id: string; name: string }[];
+    databaseId = databases.find((entry) => entry.name === inferredName)?.id || '';
+    if (!databaseId) return getCanonicalDatabaseUrl(name);
+    config.project_id = project.id;
+    config.project_name = project.name;
+  }
+
+  try {
+    const response = await gateway.getDatabaseUrl(databaseId, true);
+    if (!response.database_url) return getCanonicalDatabaseUrl(name);
+    const parsed = parseUrl(response.database_url);
+    if (name && parsed.name !== name) {
+      throw new Error(`Recovered DATABASE_URL points to '${parsed.name}', not '${name}'`);
+    }
+    config.database_url = response.database_url;
+    config.database_id = databaseId;
+    saveConfig(config);
+    return response.database_url;
+  } catch (error) {
+    if (error instanceof GatewayError && [404, 405, 501].includes(error.statusCode)) {
+      return getCanonicalDatabaseUrl(name);
+    }
+    throw error;
+  }
+}
+
+/**
+ * Explicitly register a locally known canonical URL on the owner’s gateway.
+ * This is the safe migration path for databases created before server URL
+ * storage existed; it performs no init, push, pull, or snapshot mutation.
+ */
+export async function registerCanonicalDatabaseUrl(databaseUrl: string): Promise<string> {
+  const config = loadConfig();
+  const parsed = parseUrl(databaseUrl);
+  const gatewayUrl = parsed.gateway_url || process.env.PARADOX_GATEWAY || config.sync.gateway_url || '';
+  const apiKey = process.env.PARADOX_API_KEY || config.sync.api_key || parsed.token || '';
+  if (!gatewayUrl || !apiKey) {
+    throw new Error('A gateway URL and owner API key are required to register DATABASE_URL');
+  }
+  const gateway = new GatewayClient(gatewayUrl, apiKey);
+  let projectId = config.project_id || '';
+  let projectName = parsed.project || config.project_name || '';
+  if (!projectId) {
+    const projects = (await gateway.listProjects()) as { id: string; name: string }[];
+    const project = projects.find((entry) => !projectName || entry.name === projectName);
+    if (!project) throw new Error(`Could not find project '${projectName || '(unspecified)'}'`);
+    projectId = project.id;
+    projectName = project.name;
+  }
+  const databases = (await gateway.listDatabases(projectId)) as { id: string; name: string }[];
+  const database = databases.find((entry) => entry.name === parsed.name);
+  if (!database) throw new Error(`Could not find database '${parsed.name}' in project '${projectName || projectId}'`);
+  await gateway.setDatabaseUrl(database.id, databaseUrl);
+  config.database_url = databaseUrl;
+  config.database_id = database.id;
+  config.project_id = projectId;
+  if (projectName) config.project_name = projectName;
+  saveConfig(config);
+  return databaseUrl;
 }
 
 // ── Sync daemon ─────────────────────────────────────────────────
@@ -372,7 +491,7 @@ export class ParadConnection {
     this.projectId = opts.projectId || '';
     this.storageChannel = opts.storageChannel || '';
     this.logChannel = opts.logChannel || '';
-    this.dbName = opts.gatewayUrl ? path.basename(opts.dbPath).replace(/\.db$/, '') : '';
+    this.dbName = path.basename(opts.dbPath).replace(/\.db$/, '');
     this._dbKey = dbStateKey(this.dbName, this.project);
 
     this.engine = new ClientEngine(opts.dbPath, opts.passphrase);
@@ -419,6 +538,11 @@ export class ParadConnection {
 
   get dbKey(): string {
     return this._dbKey;
+  }
+
+  /** Canonical connection URL for this successfully resolved database. */
+  get databaseUrl(): string {
+    return generateUrl(this.dbName, this.passphrase, this.gatewayUrl, this.project, this.apiKey);
   }
 
   execute(sql: string, params?: any[]): { rows: any[]; changes: number; lastInsertRowid: number } {
@@ -527,6 +651,10 @@ export class ParadConnection {
 
 // ── Convenience factory ─────────────────────────────────────────
 
+export function generatePassphrase(): string {
+  return crypto.randomBytes(32).toString('base64url');
+}
+
 function announcePassphrase(passphrase: string, dbPath: string): void {
   const msg =
     `[parad] Generated a new encryption passphrase for '${dbPath}': ${passphrase}\n` +
@@ -569,6 +697,7 @@ export interface ConnectOptions {
   pullIntervalMs?: number;
   storageChannel?: string;
   logChannel?: string;
+  allowLegacyDefault?: boolean;
 }
 
 export async function connect(opts: ConnectOptions | string): Promise<ParadConnection> {
@@ -580,9 +709,10 @@ export async function connect(opts: ConnectOptions | string): Promise<ParadConne
   }
 
   const cfg = loadConfig();
+  const configuredUrl = options.url || ((!options.name && !options.dbPath) ? process.env.DATABASE_URL || cfg.database_url || '' : '');
   let parsedUrl: ParsedUrl | null = null;
-  if (options.url) {
-    parsedUrl = parseUrl(options.url);
+  if (configuredUrl) {
+    parsedUrl = parseUrl(configuredUrl);
   }
 
   const urlName = parsedUrl?.name || options.name || '';
@@ -611,7 +741,7 @@ export async function connect(opts: ConnectOptions | string): Promise<ParadConne
     // machines. Never auto-generate for an existing DB file — that keeps
     // legacy 'default'-encrypted databases readable.
     if (!fs.existsSync(resolvedPath)) {
-      resolvedPassphrase = crypto.randomBytes(32).toString('base64url');
+      resolvedPassphrase = generatePassphrase();
       try {
         const c = loadConfig();
         c.encryption.passphrase = resolvedPassphrase;
@@ -620,8 +750,14 @@ export async function connect(opts: ConnectOptions | string): Promise<ParadConne
         // non-fatal
       }
       announcePassphrase(resolvedPassphrase, resolvedPath);
-    } else {
+    } else if (options.allowLegacyDefault) {
       resolvedPassphrase = 'default';
+    } else {
+      throw new Error(
+        `No passphrase configured for existing database '${resolvedPath}'. ` +
+        `Set PARADOX_PASSPHRASE or passphrase explicitly. ` +
+        `Use allowLegacyDefault: true only for legacy databases encrypted with 'default'.`,
+      );
     }
   }
 
@@ -633,32 +769,21 @@ export async function connect(opts: ConnectOptions | string): Promise<ParadConne
   // resolve auth
   let token = options.apiKey || '';
   if (!token) token = parsedUrl?.token || '';
-  const email = parsedUrl?.email || '';
-  const password = parsedUrl?.password || '';
 
   let resolvedApiKey = '';
   if (token) {
-    resolvedApiKey = token;
-  } else if (email && password) {
-    if (!resolvedGateway) {
-      throw new Error('email/password in URL require a gateway');
-    }
-    const gw = new GatewayClient(resolvedGateway);
-    try {
-      const result = await gw.login(email, password);
-      resolvedApiKey = result.api_key;
-    } catch (exc) {
-      throw new Error(`Login to gateway failed: ${exc instanceof Error ? exc.message : String(exc)}`);
-    }
-    if (!resolvedApiKey) {
-      throw new Error('Login succeeded but no API key was returned');
-    }
-    try {
-      const c = loadConfig();
-      c.sync.api_key = resolvedApiKey;
-      saveConfig(c);
-    } catch {
-      // non-fatal
+    if (token.startsWith('nxa_')) {
+      if (!resolvedGateway) throw new Error('A Nexuss Auth API key requires a Paradox gateway');
+      const gateway = new GatewayClient(resolvedGateway);
+      try {
+        const result = await gateway.exchangeNexussApiKey(token);
+        resolvedApiKey = result.api_key;
+      } catch (exc) {
+        throw new Error(`Nexuss Auth exchange failed: ${exc instanceof Error ? exc.message : String(exc)}`);
+      }
+      if (!resolvedApiKey.startsWith('pk_')) throw new Error('Nexuss Auth exchange did not return a Paradox API key');
+    } else {
+      resolvedApiKey = token;
     }
   } else {
     resolvedApiKey = resolvedGateway ? cfg.sync.api_key : '';
@@ -719,5 +844,26 @@ export async function connect(opts: ConnectOptions | string): Promise<ParadConne
     logChannel: options.logChannel || process.env.PARADOX_LOG_CHANNEL || '',
   });
   await conn.init();
+
+  // Register the canonical URL server-side after provisioning. Older
+  // gateways may not have this endpoint yet, so retain legacy connectivity
+  // when they return 404/405.
+  if (resolvedGateway && databaseId) {
+    try {
+      await new GatewayClient(resolvedGateway, resolvedApiKey).setDatabaseUrl(databaseId, conn.databaseUrl);
+    } catch (error) {
+      if (!(error instanceof GatewayError) || ![404, 405, 501].includes(error.statusCode)) {
+        throw new Error(`Could not store canonical database_url on gateway: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  }
+
+  try {
+    const c = loadConfig();
+    c.database_url = conn.databaseUrl;
+    saveConfig(c);
+  } catch {
+    // non-fatal: the connection itself is ready even if config persistence fails
+  }
   return conn;
 }

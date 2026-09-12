@@ -34,7 +34,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Paradox-DB Gateway",
-    version="2.5.6",
+version="2.5.6",
     description="Web Gateway for Telegram-synced SQLite database",
     lifespan=lifespan,
 )

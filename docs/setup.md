@@ -35,18 +35,20 @@ docker compose up --build -d
 # Verify
 curl http://localhost:8000/health
 
-# Register a user
-curl -X POST http://localhost:8000/v1/auth/register
+# Configure Nexuss Auth routing (Google stays enabled in the Nexuss project)
+export NEXUSS_AUTH_URL="https://your-nexuss-auth.example"
+export NEXUSS_AUTH_PROJECT_ID="your-paradox-project-id"
 ```
 
 ## Connecting Client to Gateway
 
-1. Register via the gateway to get an API key
+1. Sign in with Google through the configured Paradox/Nexuss web flow, create a Nexuss project token, and exchange it for a Paradox key:
 2. Configure the client:
 
 ```bash
+parad auth login --api-key nxa_...
 bun run src/cli.ts config set sync.gateway_url http://your-gateway:8000/v1
-bun run src/cli.ts config set sync.api_key YOUR_API_KEY
+bun run src/cli.ts config set sync.api_key pk_...
 ```
 
 3. Push to cloud:

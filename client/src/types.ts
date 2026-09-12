@@ -1,4 +1,6 @@
 export interface ClientConfig {
+  /** Canonical connection URL returned after successful database provisioning. */
+  database_url?: string;
   database_path: string;
   project_id: string;
   project_name: string;

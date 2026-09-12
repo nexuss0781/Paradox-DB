@@ -22,7 +22,7 @@ interface MockDb {
 class MockStore {
   projects: { id: string; name: string }[] = [];
   databases: MockDb[] = [];
-  loginCalls = 0;
+  nexussExchangeCalls = 0;
   uploadCalls = 0;
   private p = 0;
   private d = 0;
@@ -132,12 +132,8 @@ class MockGateway {
       this.send(res, 200, { id: 'u1', username: 'alice', email: 'alice@example.com' });
       return;
     }
-    if (method === 'POST' && p === '/auth/login') {
-      s.loginCalls += 1;
-      this.send(res, 200, { user_id: 'u1', email: 'alice@example.com', username: 'alice', api_key: 'pk_test_api_key' });
-      return;
-    }
-    if (method === 'POST' && p === '/auth/register') {
+    if (method === 'POST' && p === '/auth/nexuss/exchange') {
+      s.nexussExchangeCalls += 1;
       this.send(res, 200, { user_id: 'u1', email: 'alice@example.com', username: 'alice', api_key: 'pk_test_api_key' });
       return;
     }
@@ -257,15 +253,15 @@ afterEach(() => {
 
 const PASSPHRASE = 'secret';
 
-describe('workflow T1: connect(email:password) auto-login + provisioning', () => {
-  it('logs in, provisions project+db, persists project-scoped state', async () => {
+describe('workflow T1: connect(nexuss-api-key) exchange + provisioning', () => {
+  it('exchanges a Nexuss key, provisions project+db, and persists project-scoped state', async () => {
     const store = new MockStore();
     const gw = new MockGateway(store);
     const base = await gw.start();
-    const url = `parad://alice@example.com:secretpw@local/myproj/mydb?passphrase=${PASSPHRASE}&gateway=${base}`;
+    const url = `parad://nxa_test_api_key@local/myproj/mydb?passphrase=${PASSPHRASE}&gateway=${base}`;
 
     const conn = await connect(url);
-    expect(store.loginCalls).toBeGreaterThanOrEqual(1);
+    expect(store.nexussExchangeCalls).toBeGreaterThanOrEqual(1);
     expect(store.projectByName('myproj')).toBeTruthy();
     expect(store.dbByName('mydb')).toBeTruthy();
     expect(conn.dbKey).toBe('myproj/mydb');

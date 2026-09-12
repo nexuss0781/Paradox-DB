@@ -68,7 +68,7 @@ pip install parad
 ### Setup (one time)
 
 ```bash
-parad auth register          # create account (prompts for email/password)
+parad auth login --api-key "$PARADOX_API_KEY"  # accepts a Paradox pk_ key or exchanges a Nexuss nxa_ key
 parad init users --project myapp  # creates everything: project, DB, local file, cloud backup
 ```
 
@@ -102,28 +102,40 @@ for row in rows:
 db.close()
 ```
 
-### Connection String
+### Canonical Connection URL
+
+For new applications and deployments, prefer one canonical `DATABASE_URL` value rather than separate project, gateway, passphrase, and API-key settings. Project-scoped SDK connections register this value with the gateway, which stores it encrypted at rest on the server.
 
 ```python
-# Standard connection URL (like PostgreSQL)
-db = connect(url="parad://local/users?passphrase=secret")
-
-# From environment variable
 import os
+from parad import connect
+
 db = connect(url=os.environ["DATABASE_URL"])
 ```
 
-```bash
-# Generate connection URL
-parad url
-# → parad://local/users?passphrase=secret
-```
+Retrieve the configured URL from either SDK CLI. Local values are checked first; when unavailable, the CLI performs read-only owner-authenticated server recovery. Output is redacted by default:
 
 ```bash
-# Environment variable support
-export DATABASE_URL="parad://local/users?passphrase=secret"
-export PARADOX_PASSPHRASE="secret"
+parad url
+# Deliberately print the complete secret-bearing value for a secret manager:
+parad url --print-database-url
+parad database-url --print-database-url
 ```
+
+For a new project, provision once and capture the canonical value:
+
+```bash
+parad auth login --api-key "$PARADOX_API_KEY"
+parad init users --project myapp --print-database-url
+```
+
+Set only the resulting value in the deployment environment:
+
+```bash
+export DATABASE_URL="parad://..."
+```
+
+Legacy connection strings and split configuration fields remain supported for existing projects. An explicit `url` argument is strongest; otherwise `DATABASE_URL`, persisted `config.database_url`, server recovery, and finally legacy reconstruction are used in that order. The full secret-bearing value is returned only by the explicit `--print-database-url` command.
 
 ---
 
@@ -268,18 +280,19 @@ parad [--version]
 │   --status                      Show daemon PID / status
 │
 ├── auth                          Authentication group
-│   register                      Create account (prompts for email, username, password)
-│       --email                   Email (prompted)
-│       --username                Username (prompted)
-│       --password                Password (prompted, hidden)
-│   login                         Log in (prompts for email, password)
-│       --email                   Email (prompted)
-│       --password                Password (prompted, hidden)
+│   register                      Explains the Nexuss Auth registration flow
+│   login                         Validate a Paradox pk_ key or exchange a Nexuss nxa_ key
+│       --api-key                 Paradox API key or Nexuss Auth API key
 │   status                        Show current logged-in user
 │
 ├── config                        Configuration group
-│   show                          Print current config as JSON
-│   set <KEY> <VALUE>             Set a config value (dotted path, e.g. sync.api_key)
+│   show                          Print current config as JSON (secrets redacted)
+│   set <KEY> <VALUE>             Set a config value (sensitive output redacted)
+│
+├── url [NAME]                    Retrieve canonical database_url (redacted)
+│   --print-database-url          Deliberately print the full secret-bearing URL
+│
+├── database-url [NAME]           Alias for url
 │
 ├── project                       Project management group
 │   list                          List all projects
@@ -313,7 +326,7 @@ parad [--version]
 
 ```bash
 # Full workflow: init → use → manage
-parad auth register
+parad auth login --api-key "$PARADOX_API_KEY"
 parad init users --project myapp
 parad exec "CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, email TEXT)"
 parad insert users '{"name": "Alice", "email": "alice@example.com"}'
@@ -444,8 +457,8 @@ uvicorn app.main:app --reload --port 8000
 **Auth**
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/v1/auth/register` | Register user |
-| `POST` | `/v1/auth/login` | Login |
+| `POST` | `/v1/auth/nexuss/exchange` | Exchange a Nexuss API key for a Paradox API key |
+| `POST` | `/v1/auth/nexuss/handoff` | Trusted server exchange for a one-time Nexuss Google handoff |
 | `GET` | `/v1/auth/me` | Current user |
 
 **Projects**
@@ -501,7 +514,7 @@ All parad behavior is configurable via environment variables. These override any
 
 ```bash
 # Authentication (for CI/cloud — no interactive prompts)
-PARADOX_API_KEY="pk_..."          # cloud API key from parad auth register/login
+PARADOX_API_KEY="pk_..."          # Paradox key minted after Nexuss Auth verification
 
 # Encryption
 PARADOX_PASSPHRASE="secret"       # default encryption passphrase
@@ -659,7 +672,7 @@ async def get_messages(room: str, limit: int = 50):
 
 **Render environment variables:**
 ```
-PARADOX_API_KEY=eyJ...       # from parad auth login
+PARADOX_API_KEY=pk_...        # minted after Nexuss Auth verification
 PARADOX_PASSPHRASE=secret    # encryption key
 ```
 

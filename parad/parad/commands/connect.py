@@ -6,12 +6,13 @@ from parad.config import load_config, save_config, config_dir, gateway_db_name, 
 from parad.connection import db_state_key
 from parad.engine import Engine
 from parad.gateway import GatewayClient, GatewayError
+from parad.commands.auth import authenticate_api_key
 from parad.state import get_remote_version, set_remote_version, set_last_local_hash
 from parad.watcher import is_running, get_daemon_pid, start_daemon
 
 
 def _ensure_auth(config):
-    """Auto-authenticate: prompt for credentials if no valid token.
+    """Auto-authenticate: prompt for an API key if no valid token.
 
     In non-interactive mode (CI/cloud), raises an error instead of prompting.
     """
@@ -32,18 +33,16 @@ def _ensure_auth(config):
         )
 
     click.echo("Authentication required.")
-    email = click.prompt("Email")
-    password = click.prompt("Password", hide_input=True)
+    api_key = click.prompt("Paradox or Nexuss API key", hide_input=True)
 
     try:
-        result = gw.login(email, password)
-        token = result.get("access_token") or result.get("api_key")
-        if token:
-            set_config_value("sync.api_key", token)
-            config.sync.api_key = token
+        resolved, _ = authenticate_api_key(config, api_key)
+        gw.api_key = resolved.api_key
+        if gw.api_key:
+            config.sync.api_key = gw.api_key
             click.echo("✓ Authentication successful")
         else:
-            raise click.ClickException("Login succeeded but no token received")
+            raise click.ClickException("Authentication succeeded but no Paradox API key was received")
     except GatewayError as e:
         raise click.ClickException(f"Authentication failed: {e}")
 
