@@ -437,3 +437,62 @@ class GatewayClient:
         )
         self._check(resp)
         return RollbackResponse(**resp.json())
+
+    # -- Server-side SQL sessions ----------------------------------
+
+    def sql(
+        self,
+        database_id: str,
+        sql: str,
+        params: list = (),
+        passphrase: str = "",
+        executescript: bool = False,
+        flush: bool = False,
+    ) -> dict:
+        """Execute a SQL statement in the database's persistent session.
+
+        ``params`` are PEP-249 style bind parameters (``?`` placeholders).
+        Returns the gateway payload with ``columns``, ``rows``,
+        ``rowcount``, ``lastrowid``, ``changes``, ``in_transaction`` and
+        ``persisted_version``.  Set ``flush=True`` to force the snapshot
+        to be persisted to Telegram on a clean session.
+        """
+        payload = {
+            "sql": sql,
+            "params": list(params),
+            "passphrase": passphrase,
+            "executescript": executescript,
+            "flush": flush,
+        }
+        resp = httpx.post(
+            f"{self.gateway_url}/v1/databases/{database_id}/sql",
+            json=payload,
+            headers=self._headers(),
+            timeout=COLD_START_TIMEOUT,
+            follow_redirects=True,
+        )
+        self._check(resp)
+        return resp.json()
+
+    def sql_session_status(self, database_id: str) -> dict:
+        """Return the persistent session status for a database."""
+        resp = httpx.get(
+            f"{self.gateway_url}/v1/databases/{database_id}/sql/session",
+            headers=self._headers(),
+            timeout=SHORT_TIMEOUT,
+            follow_redirects=True,
+        )
+        self._check(resp)
+        return resp.json()
+
+    def sql_session_close(self, database_id: str, commit: bool = True) -> dict:
+        """Close the persistent session, persisting any committed work."""
+        resp = httpx.delete(
+            f"{self.gateway_url}/v1/databases/{database_id}/sql/session",
+            json={"commit": commit},
+            headers=self._headers(),
+            timeout=COLD_START_TIMEOUT,
+            follow_redirects=True,
+        )
+        self._check(resp)
+        return resp.json()
