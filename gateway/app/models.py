@@ -64,6 +64,7 @@ class ParadoxDB(Base):
     description = Column(Text, nullable=True)
     latest_version = Column(Integer, default=0, nullable=False)
     latest_message_id = Column(String(64), nullable=True)
+    latest_file_id = Column(String(256), nullable=True)
     file_hash = Column(String(64), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
@@ -83,6 +84,7 @@ class DatabaseVersion(Base):
     file_hash = Column(String(64), nullable=False)
     file_size = Column(Integer, default=0, nullable=False)
     message_id = Column(String(64), nullable=True)
+    file_id = Column(String(256), nullable=True)
     notes = Column(Text, nullable=True)
     created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
@@ -103,6 +105,7 @@ class DatabaseBackup(Base):
     file_hash = Column(String(64), nullable=False)
     file_size = Column(Integer, default=0, nullable=False)
     message_id = Column(String(64), nullable=True)
+    file_id = Column(String(256), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     db = relationship("ParadoxDB", back_populates="backups")
