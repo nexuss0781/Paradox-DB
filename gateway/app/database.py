@@ -66,6 +66,15 @@ async def init_db() -> None:
         await conn.execute(
             text("ALTER TABLE paradox_dbs ADD COLUMN IF NOT EXISTS database_url_encrypted TEXT")
         )
+        await conn.execute(
+            text("ALTER TABLE paradox_dbs ADD COLUMN IF NOT EXISTS latest_file_id VARCHAR(256)")
+        )
+        await conn.execute(
+            text("ALTER TABLE database_versions ADD COLUMN IF NOT EXISTS file_id VARCHAR(256)")
+        )
+        await conn.execute(
+            text("ALTER TABLE database_backups ADD COLUMN IF NOT EXISTS file_id VARCHAR(256)")
+        )
         await conn.execute(text("""
             CREATE TABLE IF NOT EXISTS api_keys (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
