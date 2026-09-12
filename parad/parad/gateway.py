@@ -84,29 +84,13 @@ class GatewayClient:
         self.api_key = data.get("api_key", self.api_key)
         return RegisterResponse(**data)
 
-    # ── Email auth ───────────────────────────────────────────────
+    # ── Nexuss credential exchange ───────────────────────────────
 
-    def register_email(self, email: str, username: str, password: str) -> dict:
-        """Register a new account with email, username, and password."""
+    def exchange_nexuss_api_key(self, api_key: str) -> dict:
+        """Exchange a Nexuss ``nxa_`` credential for a Paradox ``pk_`` key."""
         resp = httpx.post(
-            f"{self.gateway_url}/auth/register",
-            json={"email": email, "username": username, "password": password},
-            headers={"Content-Type": "application/json"},
-            timeout=COLD_START_TIMEOUT,
-            follow_redirects=True,
-        )
-        self._check(resp)
-        data = resp.json()
-        token = data.get("api_key")
-        if token:
-            self.api_key = token
-        return data
-
-    def login(self, email: str, password: str) -> dict:
-        """Login with email and password. Issues a fresh cloud API key."""
-        resp = httpx.post(
-            f"{self.gateway_url}/auth/login",
-            json={"email": email, "password": password},
+            f"{self.gateway_url}/auth/nexuss/exchange",
+            json={"api_key": api_key},
             headers={"Content-Type": "application/json"},
             timeout=COLD_START_TIMEOUT,
             follow_redirects=True,
@@ -223,6 +207,29 @@ class GatewayClient:
         """Get database details by ID."""
         resp = httpx.get(
             f"{self.gateway_url}/databases/{database_id}",
+            headers=self._headers(),
+            timeout=SHORT_TIMEOUT,
+            follow_redirects=True,
+        )
+        self._check(resp)
+        return resp.json()
+
+    def get_database_url(self, database_id: str, reveal: bool = False) -> dict:
+        """Get redacted or explicitly revealed canonical URL metadata."""
+        path = f"{self.gateway_url}/databases/{database_id}/connection-url"
+        if reveal:
+            path += "/reveal"
+            resp = httpx.post(path, headers=self._headers(), timeout=SHORT_TIMEOUT, follow_redirects=True)
+        else:
+            resp = httpx.get(path, headers=self._headers(), timeout=SHORT_TIMEOUT, follow_redirects=True)
+        self._check(resp)
+        return resp.json()
+
+    def set_database_url(self, database_id: str, database_url: str) -> dict:
+        """Register a canonical URL; the gateway encrypts it at rest."""
+        resp = httpx.put(
+            f"{self.gateway_url}/databases/{database_id}/connection-url",
+            json={"database_url": database_url},
             headers=self._headers(),
             timeout=SHORT_TIMEOUT,
             follow_redirects=True,

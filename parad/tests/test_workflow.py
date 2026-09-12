@@ -1,11 +1,11 @@
 """End-to-end workflow tests for the hardened sync layer (hermetic mock gateway).
 
 Covers the core confirmed product workflow against a local in-process fake of
-the live gateway contract (``/v1/auth/login``, ``/v1/projects``,
+the live gateway contract (``/v1/auth/nexuss/exchange``, ``/v1/projects``,
 ``/v1/projects/{id}/databases``, ``/v1/upload``, ``/v1/download``):
 
-  T1  connect(url) with email:password -> auto-login (JWT persisted as
-      api_key), project/database auto-provisioning, project-scoped state key.
+  T1  connect(url) with a Nexuss key -> exchange for a Paradox API key,
+      project/database auto-provisioning, project-scoped state key.
   T2  offline -> recovery batch push via the daemon (one push = one new
       version); offline flag + persisted state; WARNING/INFO transitions.
   T3  conflict 409 -> pull + re-push local-wins (local content wins, remote
@@ -52,7 +52,7 @@ class Store:
     def __init__(self):
         self.projects = []
         self.databases = []
-        self.login_calls = 0
+        self.nexuss_exchange_calls = 0
         self.upload_calls = 0
         self._p = 0
         self._d = 0
@@ -180,24 +180,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
         path = urllib.parse.urlparse(self.path).path
         s = self.store
         body = self._req_body()
-        if path == "/v1/auth/login":
-            s.login_calls += 1
+        if path == "/v1/auth/nexuss/exchange":
+            s.nexuss_exchange_calls += 1
             self._send(
                 200,
                 {
                     "api_key": "pk_abc",
-                    "username": body.get("email", ""),
+                    "username": "alice",
                     "user_id": "u1",
-                },
-            )
-        elif path == "/v1/auth/register":
-            self._send(
-                200,
-                {
-                    "api_key": "pk_abc",
-                    "user_id": "u1",
-                    "username": body.get("username", ""),
-                    "email": body.get("email", ""),
                 },
             )
         elif path == "/v1/projects":
@@ -298,18 +288,18 @@ def log_capture():
     logger.removeHandler(handler)
 
 
-def test_connect_email_password_provisioning(paradox_home):
+def test_connect_nexuss_api_key_provisioning(paradox_home):
     store = Store()
     gw = Gateway(store)
     base = gw.start()
     url = (
-        f"parad://alice@example.com:secretpw@local/myproj/mydb"
+        f"parad://nxa_test_key@local/myproj/mydb"
         f"?passphrase={PASSPHRASE}&gateway={base}"
     )
     try:
         conn = connect(url=url, auto_sync=False)
         cfg = _cfg.load_config()
-        assert store.login_calls >= 1, "login should hit the gateway"
+        assert store.nexuss_exchange_calls >= 1, "Nexuss key exchange should hit the gateway"
         assert cfg.sync.api_key == "pk_abc", f"got {cfg.sync.api_key!r}"
         assert store.project_by_name("myproj") is not None
         assert cfg.project_name == "myproj"

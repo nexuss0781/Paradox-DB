@@ -10,6 +10,7 @@ import pytest
 import parad.config as _cfg
 import parad.connection as pc
 from parad.connection import connect, db_state_key, generate_url, parse_url
+from parad.config import get_canonical_database_url, load_config, register_canonical_database_url
 
 
 class FakeGatewayClient:
@@ -19,14 +20,14 @@ class FakeGatewayClient:
         self.gateway_url = gateway_url
         self.api_key = api_key
         self.login_calls = 0
+        self.nexuss_exchange_calls = 0
         FakeGatewayClient.instances.append(self)
 
-    def login(self, email, password):
-        self.login_calls += 1
-        self.login_email = email
-        self.login_password = password
-        self.api_key = "pk_from_login"
-        return {"user_id": "u1", "email": email, "username": email, "api_key": self.api_key}
+    def exchange_nexuss_api_key(self, api_key):
+        self.nexuss_exchange_calls += 1
+        self.nexuss_api_key = api_key
+        self.api_key = "pk_from_nexuss"
+        return {"user_id": "u1", "email": "alice@example.com", "username": "alice", "api_key": self.api_key}
 
     def ensure_project(self, name, description=""):
         return {"id": "p-" + name, "name": name}
@@ -57,8 +58,6 @@ def test_parse_url_local_only():
         "passphrase": "secret",
         "gateway_url": "",
         "token": "",
-        "email": "",
-        "password": "",
     }
 
 
@@ -80,14 +79,12 @@ def test_parse_url_explicit_token_query():
     assert parsed["token"] == "tok-abc"
 
 
-def test_parse_url_email_password_userinfo():
-    parsed = parse_url(
-        "parad://alice@example.com:secretpw@local/myproj/mydb"
-        "?passphrase=secret"
-    )
-    assert parsed["email"] == "alice@example.com"
-    assert parsed["password"] == "secretpw"
-    assert parsed["token"] == ""
+def test_parse_url_rejects_email_password_userinfo():
+    with pytest.raises(ValueError, match="retired"):
+        parse_url(
+            "parad://alice@example.com:secretpw@local/myproj/mydb"
+            "?passphrase=secret"
+        )
 
 
 def test_parse_url_token_userinfo():
@@ -95,8 +92,6 @@ def test_parse_url_token_userinfo():
         "parad://tok-abc@local/myproj/mydb?passphrase=secret"
     )
     assert parsed["token"] == "tok-abc"
-    assert parsed["email"] == ""
-    assert parsed["password"] == ""
 
 
 def test_parse_url_nested_project_path():
@@ -132,18 +127,6 @@ def test_generate_url_round_trips_token_form():
     assert parsed["token"] == "t1"
     assert parsed["passphrase"] == "secret"
     assert parsed["gateway_url"] == "https://g/v1"
-    assert parsed["email"] == ""
-    assert parsed["password"] == ""
-
-
-def test_generate_url_round_trips_email_password_form():
-    url = generate_url(
-        "mydb", "secret", "https://g/v1", "proj", "", "alice@example.com", "pw"
-    )
-    parsed = parse_url(url)
-    assert parsed["email"] == "alice@example.com"
-    assert parsed["password"] == "pw"
-    assert parsed["token"] == ""
 
 
 def test_generate_url_local_only():
@@ -152,6 +135,100 @@ def test_generate_url_local_only():
 
 def test_generate_url_omits_empty_query_params():
     assert generate_url("mydb") == "parad://local/mydb"
+
+
+def test_canonical_database_url_prefers_environment(monkeypatch, tmp_path):
+    monkeypatch.setenv("PARADOX_HOME", str(tmp_path))
+    url = "parad://local/proj/newdb?passphrase=secret&gateway=https://g/v1"
+    monkeypatch.setenv("DATABASE_URL", url)
+    assert get_canonical_database_url() == url
+
+
+def test_canonical_database_url_prefers_persisted_config(monkeypatch, tmp_path):
+    monkeypatch.setenv("PARADOX_HOME", str(tmp_path))
+    (tmp_path / "config.json").write_text('{"database_url": "parad://local/proj/db?passphrase=secret"}')
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    assert get_canonical_database_url() == "parad://local/proj/db?passphrase=secret"
+
+
+def test_canonical_database_url_reconstructs_and_persists_legacy_config(monkeypatch, tmp_path):
+    monkeypatch.setenv("PARADOX_HOME", str(tmp_path))
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    (tmp_path / "config.json").write_text(
+        '{"database_path": "~/legacy.db", "project_name": "proj", '
+        '"encryption": {"passphrase": "secret"}, '
+        '"sync": {"gateway_url": "https://g/v1", "api_key": "token"}}'
+    )
+    url = get_canonical_database_url()
+    parsed = parse_url(url)
+    assert parsed["name"] == "legacy"
+    assert parsed["project"] == "proj"
+    assert parsed["passphrase"] == "secret"
+    assert parsed["token"] == "token"
+    assert load_config().database_url == url
+
+
+def test_recover_canonical_database_url_from_server(monkeypatch, tmp_path):
+    monkeypatch.setenv("PARADOX_HOME", str(tmp_path))
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    (tmp_path / "config.json").write_text(
+        '{"database_path": "~/omniroute-preview.db", "project_name": "omniroute-vercel-preview", '
+        '"sync": {"gateway_url": "https://g/v1", "api_key": "api-key"}}'
+    )
+
+    class RemoteGateway:
+        def __init__(self, gateway_url, api_key=""):
+            assert gateway_url == "https://g/v1"
+            assert api_key == "api-key"
+
+        def list_projects(self):
+            return [{"id": "project-id", "name": "omniroute-vercel-preview"}]
+
+        def list_databases(self, project_id):
+            assert project_id == "project-id"
+            return [{"id": "database-id", "name": "omniroute-preview"}]
+
+        def get_database_url(self, database_id, reveal=False):
+            assert database_id == "database-id"
+            assert reveal is True
+            return {"database_id": database_id, "database_url": "parad://token@local/proj/omniroute-preview?passphrase=secret&gateway=https://g/v1"}
+
+    monkeypatch.setattr("parad.gateway.GatewayClient", RemoteGateway)
+    from parad.config import recover_canonical_database_url
+
+    recovered = recover_canonical_database_url("omniroute-preview")
+    assert recovered.startswith("parad://token@local/proj/omniroute-preview")
+    assert load_config().database_url == recovered
+
+
+def test_register_canonical_database_url_updates_server_and_config(monkeypatch, tmp_path):
+    monkeypatch.setenv("PARADOX_HOME", str(tmp_path))
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    (tmp_path / "config.json").write_text(
+        '{"project_id": "project-id", "project_name": "proj", '
+        '"sync": {"gateway_url": "https://g/v1", "api_key": "api-key"}}'
+    )
+    calls = []
+
+    class RegisterGateway:
+        def __init__(self, gateway_url, api_key=""):
+            assert gateway_url == "https://g/v1"
+            assert api_key == "api-key"
+
+        def list_databases(self, project_id):
+            assert project_id == "project-id"
+            return [{"id": "database-id", "name": "mydb"}]
+
+        def set_database_url(self, database_id, database_url):
+            calls.append((database_id, database_url))
+            return {"database_id": database_id, "configured": True}
+
+    monkeypatch.setattr("parad.gateway.GatewayClient", RegisterGateway)
+    url = "parad://token@local/proj/mydb?passphrase=secret&gateway=https://g/v1"
+    assert register_canonical_database_url(url) == url
+    assert calls == [("database-id", url)]
+    assert load_config().database_url == url
+    assert load_config().database_id == "database-id"
 
 
 def test_db_state_key_project_scoped():
@@ -195,27 +272,26 @@ def test_connect_userinfo_token_used(fake_gateway):
     assert sum(g.login_calls for g in FakeGatewayClient.instances) == 0
 
 
-def test_connect_email_password_triggers_login(fake_gateway):
+def test_connect_nexuss_api_key_triggers_exchange(fake_gateway):
     captured = fake_gateway
     connect(
-        url="parad://alice@example.com:secretpw@local/myproj/mydb"
+        url="parad://nxa_test_key@local/myproj/mydb"
         "?passphrase=secret&gateway=https://g/v1",
         auto_sync=False,
     )
-    assert sum(g.login_calls for g in FakeGatewayClient.instances) == 1
-    login_gw = FakeGatewayClient.instances[0]
-    assert login_gw.login_email == "alice@example.com"
-    assert login_gw.login_password == "secretpw"
-    assert captured["api_key"] == "pk_from_login"
+    assert sum(g.nexuss_exchange_calls for g in FakeGatewayClient.instances) == 1
+    exchange_gw = FakeGatewayClient.instances[0]
+    assert exchange_gw.nexuss_api_key == "nxa_test_key"
+    assert captured["api_key"] == "pk_from_nexuss"
 
 
-def test_connect_email_password_requires_gateway(monkeypatch):
+def test_connect_nexuss_api_key_requires_gateway(monkeypatch):
     cfg = _cfg.load_config()
     cfg.sync.gateway_url = ""
     monkeypatch.setattr(pc, "load_config", lambda: cfg)
-    with pytest.raises(ValueError, match="require a gateway"):
+    with pytest.raises(ValueError, match="requires a Paradox gateway"):
         connect(
-            url="parad://alice@example.com:secretpw@local/myproj/mydb"
+            url="parad://nxa_test_key@local/myproj/mydb"
             "?passphrase=secret",
             auto_sync=False,
         )

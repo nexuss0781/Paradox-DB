@@ -33,12 +33,11 @@ def parse_url(url: str) -> dict:
 
         parad://local/{name}?passphrase=...                                    # local only
         parad://local/{project}/{name}?passphrase=...&gateway=...              # project scoped
-        parad://local/{project}/{name}?passphrase=...&gateway=...&token=<jwt>  # explicit token
-        parad://{email}:{password}@local/{project}/{name}?passphrase=...       # auto-login
+        parad://local/{project}/{name}?passphrase=...&gateway=...&token=<api-key>
         parad://{token}@local/{project}/{name}?passphrase=...                  # userinfo token
 
     Returns a dict with keys ``name``, ``project``, ``passphrase``,
-    ``gateway_url``, ``token``, ``email``, ``password``.
+    ``gateway_url`` and ``token``. Email/password URLs are deliberately rejected.
     """
     parsed = urlparse(url)
     if parsed.scheme not in ("parad", "paradox"):
@@ -49,15 +48,11 @@ def parse_url(url: str) -> dict:
     gateway_url = qs.get("gateway", [""])[0]
     token = qs.get("token", [""])[0]
 
-    email = ""
-    password = ""
     if parsed.username is not None:
         username = unquote(parsed.username)
-        if parsed.password is not None:
-            password = unquote(parsed.password)
-        if password or "@" in username:
-            email = username
-        elif not token:
+        if parsed.password is not None or "@" in username:
+            raise ValueError("Email/password connection URLs are retired; use a Paradox or Nexuss API key")
+        if not token:
             token = username
 
     parts = parsed.path.strip("/").split("/")
@@ -72,8 +67,6 @@ def parse_url(url: str) -> dict:
         "passphrase": passphrase,
         "gateway_url": gateway_url,
         "token": token,
-        "email": email,
-        "password": password,
     }
 
 
@@ -83,14 +76,10 @@ def generate_url(
     gateway_url: str = "",
     project: str | None = None,
     token: str = "",
-    email: str = "",
-    password: str = "",
 ) -> str:
     """Generate a ``parad://`` connection URL (postgres-like)."""
     userinfo = ""
-    if email and password:
-        userinfo = f"{quote(email, safe='@')}:{quote(password, safe='')}@"
-    elif token:
+    if token:
         userinfo = f"{quote(token, safe='')}@"
     path = f"local/{project}/{name}" if project else f"local/{name}"
     url = f"parad://{userinfo}{path}"
@@ -99,11 +88,23 @@ def generate_url(
         qs.append(f"passphrase={quote(passphrase, safe='')}")
     if gateway_url:
         qs.append(f"gateway={quote(gateway_url, safe=':/')}")
-    if token and email and password:
-        qs.append(f"token={quote(token, safe='')}")
     if qs:
         url += "?" + "&".join(qs)
     return url
+
+
+def redact_url(url: str) -> str:
+    """Remove API-key, password, token, and passphrase material for display."""
+    parsed = urlparse(url)
+    userinfo = "<redacted>@" if parsed.username else ""
+    path = parsed.path
+    query = []
+    for key, values in parse_qs(parsed.query, keep_blank_values=True).items():
+        if key not in {"token", "passphrase"}:
+            for value in values:
+                query.append(f"{quote(key, safe='')}={quote(value, safe=':/')}")
+    suffix = f"?{'&'.join(query)}" if query else ""
+    return f"parad://{userinfo}{parsed.hostname or ''}{path}{suffix}"
 
 
 def db_state_key(name: str, project: str | None = None) -> str:
@@ -474,7 +475,7 @@ class ParadConnection:
         self._project_id = project_id
         self._storage_channel = storage_channel
         self._log_channel = log_channel
-        self._db_name = gateway_db_name(self._db_path) if self._gateway_url else ""
+        self._db_name = gateway_db_name(self._db_path)
         self._db_key = db_state_key(self._db_name, project)
 
         self._engine = Engine(self._db_path, self._passphrase)
@@ -515,6 +516,17 @@ class ParadConnection:
     @property
     def is_connected(self) -> bool:
         return self._engine._conn is not None
+
+    @property
+    def database_url(self) -> str:
+        """Canonical connection URL for this resolved database."""
+        return generate_url(
+            self._db_name,
+            self._passphrase,
+            self._gateway_url,
+            self._project,
+            token=self._api_key,
+        )
 
     # ── SQL interface ───────────────────────────────────────────
 
@@ -665,6 +677,11 @@ class ParadConnection:
 # ── Convenience factory ─────────────────────────────────────────
 
 
+def generate_passphrase() -> str:
+    """Generate a cryptographically random 256-bit database passphrase."""
+    return secrets.token_urlsafe(32)
+
+
 def _announce_passphrase(passphrase: str, db_path: str) -> None:
     """Print a newly generated passphrase once and persist it in ~/.paradox/.env."""
     msg = (
@@ -703,6 +720,7 @@ def connect(
     pull_on_startup: bool = False,
     storage_channel: str | None = None,
     log_channel: str | None = None,
+    allow_legacy_default: bool = False,
 ) -> ParadConnection:
     """Connect to a Parad database.
 
@@ -721,7 +739,7 @@ def connect(
     Resolution order:
 
     1. If *url* is provided, parse it for name / project / passphrase /
-       gateway_url / token / email / password.
+       gateway_url / token.
     2. If *name* is provided, derive *db_path* from ``~/.paradox/{name}.db``.
     3. If *db_path* is provided, use it directly.
     4. If no positional hints, fall back to config defaults.
@@ -732,7 +750,7 @@ def connect(
        readable.
     6. Gateway: explicit > parsed from URL > config.
     7. Auth token: explicit ``api_key`` arg > URL ``token`` param > userinfo
-       token > ``email:password`` (auto-login) > config ``sync.api_key``.
+       token > ``PARADOX_API_KEY`` / config ``sync.api_key``.
 
     Project / database are auto-provisioned on the gateway (created if
     missing) whenever a project name is present in the URL, and the
@@ -745,10 +763,11 @@ def connect(
       Useful for web servers on ephemeral filesystems (Render, Heroku, etc.).
     """
     cfg = load_config()
+    configured_url = url or ((not name and not db_path) and (os.environ.get("DATABASE_URL") or cfg.database_url or "") or "")
     parsed_url: dict = {}
 
-    if url:
-        parsed_url = parse_url(url)
+    if configured_url:
+        parsed_url = parse_url(configured_url)
 
     url_name = parsed_url.get("name") or ""
     url_project = parsed_url.get("project") or None
@@ -776,15 +795,21 @@ def connect(
         # on other machines. Never auto-generate for an existing DB file —
         # that keeps legacy 'default'-encrypted databases readable.
         if not os.path.exists(resolved_path):
-            resolved_passphrase = secrets.token_urlsafe(32)
+            resolved_passphrase = generate_passphrase()
             try:
                 set_config_value("encryption.passphrase", resolved_passphrase)
             except Exception:
                 pass
             _announce_passphrase(resolved_passphrase, resolved_path)
             cfg = load_config()
-        else:
+        elif allow_legacy_default:
             resolved_passphrase = "default"
+        else:
+            raise ValueError(
+                f"No passphrase configured for existing database '{resolved_path}'. "
+                "Set PARADOX_PASSPHRASE or passphrase explicitly. "
+                "Use allow_legacy_default=True only for legacy databases encrypted with 'default'."
+            )
 
     # ── resolve gateway_url ─────────────────────────────────────
     resolved_gateway = gateway_url
@@ -797,28 +822,21 @@ def connect(
     token = api_key
     if not token:
         token = parsed_url.get("token", "") or ""
-    email = parsed_url.get("email", "") or ""
-    password = parsed_url.get("password", "") or ""
-
     resolved_api_key = ""
     if token:
-        resolved_api_key = token
-    elif email and password:
-        if not resolved_gateway:
-            raise ValueError("email/password in URL require a gateway")
-        gw = GatewayClient(resolved_gateway)
-        try:
-            result = gw.login(email, password)
-        except GatewayError as exc:
-            raise ConnectionError(f"Login to gateway failed: {exc}") from exc
-        resolved_api_key = gw.api_key
-        if not resolved_api_key:
-            raise ConnectionError("Login succeeded but no token was returned")
-        try:
-            set_config_value("sync.api_key", resolved_api_key)
-            cfg = load_config()
-        except Exception:
-            pass
+        if token.startswith("nxa_"):
+            if not resolved_gateway:
+                raise ValueError("A Nexuss Auth API key requires a Paradox gateway")
+            gw = GatewayClient(resolved_gateway)
+            try:
+                result = gw.exchange_nexuss_api_key(token)
+            except GatewayError as exc:
+                raise ConnectionError(f"Nexuss Auth exchange failed: {exc}") from exc
+            resolved_api_key = result.get("api_key", "")
+            if not resolved_api_key.startswith("pk_"):
+                raise ConnectionError("Nexuss Auth exchange did not return a Paradox API key")
+        else:
+            resolved_api_key = token
     else:
         resolved_api_key = cfg.sync.api_key if resolved_gateway else ""
 
@@ -869,5 +887,26 @@ def connect(
         storage_channel=storage_channel or os.environ.get("PARADOX_STORAGE_CHANNEL", ""),
         log_channel=log_channel or os.environ.get("PARADOX_LOG_CHANNEL", ""),
     )
+
+    # Register the canonical URL server-side after provisioning. Older
+    # gateways may not have this endpoint yet, so keep legacy connectivity
+    # working when they return 404/405.
+    if resolved_gateway and database_id:
+        try:
+            gateway_client = GatewayClient(resolved_gateway, resolved_api_key)
+            setter = getattr(gateway_client, "set_database_url", None)
+            if setter is not None:
+                setter(database_id, conn.database_url)
+        except GatewayError as exc:
+            if exc.status_code not in (404, 405, 501):
+                raise ConnectionError(
+                    f"Could not store canonical database_url on gateway: {exc}"
+                ) from exc
+
+    try:
+        cfg.database_url = conn.database_url
+        save_config(cfg)
+    except Exception:
+        pass
 
     return conn

@@ -14,6 +14,7 @@ function defaultConfigPath(): string {
 }
 
 const DEFAULT_CONFIG: ClientConfig = {
+  database_url: '',
   database_path: join(homedir(), '.paradox', 'data.db'),
   project_id: '',
   project_name: '',
