@@ -13,4 +13,3 @@ PyJWT>=2.8.0
 passlib[bcrypt]>=1.7.4
 prometheus-client>=0.20.0
 python-multipart>=0.0.9
-telethon>=1.36.0
