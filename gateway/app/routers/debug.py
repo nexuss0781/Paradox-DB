@@ -13,6 +13,7 @@ import sys
 from datetime import UTC, datetime
 
 from fastapi import APIRouter
+from fastapi.responses import PlainTextResponse
 
 from app.config import settings
 
@@ -76,7 +77,7 @@ async def debug_index() -> dict[str, object]:
         "service": "paradox-db-gateway",
         "debug": True,
         "warning": "Values are redacted; this is a temporary diagnostics endpoint.",
-        "routes": ["/dbg", "/dbg/env", "/dbg/config", "/dbg/ping"],
+        "routes": ["/dbg", "/dbg/env", "/dbg/env.txt", "/dbg/config", "/dbg/ping"],
     }
 
 
@@ -99,6 +100,18 @@ async def debug_environment() -> dict[str, object]:
         "environment": _safe_environment(),
         "warning": "Secret values are intentionally redacted.",
     }
+
+
+@router.get("/env.txt", response_class=PlainTextResponse)
+async def debug_environment_text() -> PlainTextResponse:
+    """Show the runtime environment as copyable KEY=value lines."""
+    lines = [
+        "# Paradox-DB runtime environment",
+        "# Secret values are intentionally redacted.",
+    ]
+    for name, item in _safe_environment().items():
+        lines.append(f"{name}={item['value']}")
+    return PlainTextResponse("\n".join(lines) + "\n")
 
 
 @router.get("/config")
