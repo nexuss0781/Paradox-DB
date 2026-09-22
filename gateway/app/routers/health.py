@@ -10,6 +10,7 @@ from app.config import settings
 from app.database import async_session_factory
 from app.metrics import registry_operations, telegram_api_errors
 from app.models import HealthResponse
+from app.startup_state import snapshot
 from app.telegram_logger import log_operation
 
 logger = logging.getLogger(__name__)
@@ -19,8 +20,10 @@ router = APIRouter()
 
 @router.get("/health", response_model=HealthResponse)
 async def health_check():
-    await log_operation("health", "Health check: ok", "success")
-    return HealthResponse(status="ok")
+    state = snapshot()
+    status = "ok" if state.get("status") == "ready" else "degraded"
+    await log_operation("health", f"Health check: {status}", "success")
+    return HealthResponse(status=status)
 
 
 async def check_postgres() -> None:
@@ -48,6 +51,11 @@ async def check_redis() -> None:
 @router.get("/health/ready")
 async def readiness_check():
     errors: list[str] = []
+    state = snapshot()
+    if state.get("status") != "ready":
+        phase = state.get("phase", "startup")
+        error = state.get("error", "application startup is incomplete")
+        errors.append(f"startup ({phase}): {error}")
 
     async def _pg():
         try:
