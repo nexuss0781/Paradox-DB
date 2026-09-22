@@ -13,6 +13,9 @@ from app.config import settings
 from app.database_url import prepare_async_database_url
 
 
+_engine_config_error: Exception | None = None
+
+
 def create_database_engine(database_url: str) -> AsyncEngine:
     db_url, ssl_kwargs = prepare_async_database_url(database_url)
     return create_async_engine(
@@ -24,7 +27,15 @@ def create_database_engine(database_url: str) -> AsyncEngine:
     )
 
 
-engine = create_database_engine(settings.database_url)
+try:
+    engine = create_database_engine(settings.database_url)
+except Exception as exc:
+    # Keep module importable so /dbg/startup can report malformed deployment
+    # configuration instead of Uvicorn failing before the app is created.
+    _engine_config_error = exc
+    engine = create_database_engine(
+        "postgresql+asyncpg://postgres:postgres@localhost:5432/paradox_registry"
+    )
 
 async_session_factory = async_sessionmaker(
     engine,
@@ -48,6 +59,8 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 
 async def init_db() -> None:
+    if _engine_config_error is not None:
+        raise _engine_config_error
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.execute(
