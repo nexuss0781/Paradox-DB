@@ -18,6 +18,7 @@ from app.services.telegram import (
     TelegramServerError,
     TelegramUnauthorizedError,
 )
+from app.startup_state import mark_degraded, mark_ready
 from app.telegram_logger import log_operation
 from app.routers.sql import session_store
 
@@ -25,7 +26,18 @@ from app.routers.sql import session_store
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     setup_logging()
-    await init_db()
+    try:
+        await init_db()
+    except Exception as exc:
+        # Keep liveness and diagnostics available when an external dependency
+        # is unavailable. Database-backed routes will report their own errors,
+        # while /dbg/startup and /health/ready expose the root cause.
+        mark_degraded("database_initialization", exc)
+        import logging
+
+        logging.getLogger(__name__).exception("Database initialization failed")
+    else:
+        mark_ready()
     session_store.start()
     yield
     await session_store.stop()

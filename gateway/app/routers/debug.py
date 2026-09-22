@@ -16,6 +16,7 @@ from fastapi import APIRouter
 from fastapi.responses import PlainTextResponse
 
 from app.config import settings
+from app.startup_state import snapshot
 
 router = APIRouter(prefix="/dbg", tags=["debug"])
 
@@ -77,7 +78,14 @@ async def debug_index() -> dict[str, object]:
         "service": "paradox-db-gateway",
         "debug": True,
         "warning": "Values are redacted; this is a temporary diagnostics endpoint.",
-        "routes": ["/dbg", "/dbg/env", "/dbg/env.txt", "/dbg/config", "/dbg/ping"],
+        "routes": [
+            "/dbg",
+            "/dbg/env",
+            "/dbg/env.txt",
+            "/dbg/config",
+            "/dbg/startup",
+            "/dbg/ping",
+        ],
     }
 
 
@@ -127,6 +135,12 @@ async def debug_config() -> dict[str, object]:
         },
         "warning": "Secret values are intentionally redacted.",
     }
+
+
+@router.get("/startup")
+async def debug_startup() -> dict[str, object]:
+    """Return startup state and a redacted initialization error, if any."""
+    return {"startup": snapshot(), "warning": "Error details are redacted."}
 
 
 @router.get("/ping")
