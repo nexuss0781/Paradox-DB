@@ -4,7 +4,7 @@ load("//anybuild/tools:python.bzl", "python_build", "python_config", "python_ser
 config = python_config(
     schema = 1,
     commands = {
-        "start": "python main.py",
+        "start": "uvicorn main:app --host 0.0.0.0 --port 8080 --log-level info",
         "after_deploy": "alembic upgrade head",
     },
     python_main_file = "main.py",
