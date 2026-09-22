@@ -1,0 +1,2 @@
+# Wasmer detects this file from the repository root.
+-r gateway/requirements.txt
