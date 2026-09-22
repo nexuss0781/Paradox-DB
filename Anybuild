@@ -1,0 +1,22 @@
+# Explicit Wasmer Anybuild definition for the Paradox-DB FastAPI service.
+load("//anybuild/tools:python.bzl", "python_build", "python_config", "python_serve")
+
+config = python_config(
+    schema = 1,
+    commands = {
+        "start": "python main.py",
+        "after_deploy": "alembic upgrade head",
+    },
+    python_main_file = "main.py",
+    python_version = "3.13",
+    uv_version = "0.8.15",
+)
+
+build = python_build(config)
+
+python_serve(
+    config,
+    build,
+    name = "paradox-db",
+    extra_env = {"PORT": "8080"},
+)
