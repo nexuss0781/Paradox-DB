@@ -11,7 +11,7 @@ from app.database import close_db, init_db
 from app.halt import maybe_halt_on_rate_limit
 from app.logging_config import setup_logging
 from app.metrics import MetricsMiddleware, get_metrics
-from app.routers import auth, databases, health, notifications, projects, sql, test
+from app.routers import auth, databases, debug, health, notifications, projects, sql, test
 from app.services.telegram import (
     TelegramError,
     TelegramRateLimitError,
@@ -123,6 +123,7 @@ async def metrics_endpoint():
 
 
 app.include_router(health.router, tags=["health"])
+app.include_router(debug.router)
 app.include_router(auth.router, tags=["auth"])
 app.include_router(test.router, tags=["test"])
 app.include_router(notifications.router, tags=["notifications"])
