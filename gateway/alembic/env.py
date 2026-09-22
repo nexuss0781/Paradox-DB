@@ -1,4 +1,6 @@
 import asyncio
+import logging
+import os
 from logging.config import fileConfig
 
 from sqlalchemy import pool
@@ -16,9 +18,14 @@ if config.config_file_name is not None:
 
 target_metadata = Base.metadata
 
-
-_db_url, _ssl_kwargs = prepare_async_database_url(settings.database_url)
-config.set_main_option("sqlalchemy.url", _db_url)
+logger = logging.getLogger("alembic.runtime")
+_db_url: str | None = None
+_ssl_kwargs: dict = {}
+try:
+    _db_url, _ssl_kwargs = prepare_async_database_url(settings.database_url)
+    config.set_main_option("sqlalchemy.url", _db_url)
+except Exception:
+    logger.exception("Could not prepare DATABASE_URL for migrations")
 
 
 def run_migrations_offline() -> None:
@@ -46,7 +53,14 @@ async def run_async_migrations() -> None:
 
 
 def run_migrations_online() -> None:
-    asyncio.run(run_async_migrations())
+    if _db_url is None:
+        return
+    try:
+        asyncio.run(run_async_migrations())
+    except Exception:
+        logger.exception("Database migration failed")
+        if os.getenv("MIGRATIONS_STRICT", "0").lower() in {"1", "true", "yes"}:
+            raise
 
 
 if context.is_offline_mode():
