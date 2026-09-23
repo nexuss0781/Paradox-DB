@@ -12,9 +12,16 @@ RUN pip install --no-cache-dir -r requirements.txt
 FROM base AS production
 
 COPY app/ app/
+COPY container_health.py .
+COPY docker-entrypoint.sh .
 COPY alembic/ alembic/
 COPY alembic.ini .
 
 EXPOSE 8000
 
-CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4"]
+HEALTHCHECK --interval=10s --timeout=5s --start-period=60s --retries=5 \
+  CMD ["python", "container_health.py"]
+
+RUN chmod +x docker-entrypoint.sh
+
+ENTRYPOINT ["./docker-entrypoint.sh"]
