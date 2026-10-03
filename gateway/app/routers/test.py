@@ -1,12 +1,11 @@
 """Live end-to-end test route for Paradox-DB Gateway.
 
 Hit GET /test to run a full integration test suite against the live
-Docker environment (PostgreSQL, Redis, Telegram).
+Docker environment (PostgreSQL advisory locks and Telegram).
 
 Each step is reported independently so partial failures are visible.
 """
 
-import base64
 import hashlib
 import secrets
 import time
@@ -17,13 +16,14 @@ from datetime import datetime
 import httpx
 from fastapi import APIRouter, Depends
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import get_current_user
 from app.config import settings
-from app.database import async_session_factory, get_db
+from app.database import async_session_factory
 from app.models import User
+from app.postgres_lock import postgres_advisory_lock
 from app.services.telegram import TelegramClient
+from app.startup_diagnostics import redact_diagnostic
 from app.telegram_logger import log_operation
 
 router = APIRouter()
@@ -53,22 +53,26 @@ async def _run_test():
         s["status"] = "pass"
     except Exception as e:
         s["status"] = "fail"
-        s["error"] = str(e)
+        s["error"] = redact_diagnostic(e)
     s["duration_ms"] = round((time.time() - t0) * 1000, 1)
     results.append(s)
 
-    # ── 2. Health: Redis ─────────────────────────────────────────────
-    s = _step("redis_connect")
+    # ── 2. Health: PostgreSQL transaction-scoped advisory locks ──────
+    s = _step("postgres_advisory_lock")
     t0 = time.time()
     try:
-        import redis.asyncio as aioredis
-
-        async with aioredis.from_url(settings.redis_url, decode_responses=True) as r:
-            await r.ping()
-        s["status"] = "pass"
+        async with async_session_factory() as session:
+            acquired = await postgres_advisory_lock.acquire(
+                session, f"diagnostic:{uuid.uuid4().hex}", timeout=0
+            )
+        if acquired:
+            s["status"] = "pass"
+        else:
+            s["status"] = "fail"
+            s["error"] = "PostgreSQL advisory lock was not acquired"
     except Exception as e:
         s["status"] = "fail"
-        s["error"] = str(e)
+        s["error"] = redact_diagnostic(e)
     s["duration_ms"] = round((time.time() - t0) * 1000, 1)
     results.append(s)
 
@@ -85,7 +89,7 @@ async def _run_test():
             s["error"] = "Bot token invalid or Telegram unreachable"
     except Exception as e:
         s["status"] = "fail"
-        s["error"] = str(e)
+        s["error"] = redact_diagnostic(e)
     s["duration_ms"] = round((time.time() - t0) * 1000, 1)
     results.append(s)
 
@@ -109,7 +113,7 @@ async def _run_test():
                     s["error"] = f"getChat returned {resp.status_code}: {resp.text[:200]}"
     except Exception as e:
         s["status"] = "fail"
-        s["error"] = str(e)
+        s["error"] = redact_diagnostic(e)
     s["duration_ms"] = round((time.time() - t0) * 1000, 1)
     results.append(s)
 
@@ -125,7 +129,15 @@ async def _run_test():
                 )
             )
             tables = sorted([row[0] for row in res.fetchall()])
-            required = {"users", "projects", "paradox_dbs", "database_versions", "database_backups", "sync_log", "conflict_log"}
+            required = {
+                "users",
+                "projects",
+                "paradox_dbs",
+                "database_versions",
+                "database_backups",
+                "sync_log",
+                "conflict_log",
+            }
             missing = required - set(tables)
             if missing:
                 s["status"] = "fail"
@@ -135,7 +147,7 @@ async def _run_test():
                 s["tables"] = tables
     except Exception as e:
         s["status"] = "fail"
-        s["error"] = str(e)
+        s["error"] = redact_diagnostic(e)
     s["duration_ms"] = round((time.time() - t0) * 1000, 1)
     results.append(s)
 
@@ -170,7 +182,7 @@ async def _run_test():
             s["file_id"] = uploaded_file_id
     except Exception as e:
         s["status"] = "fail"
-        s["error"] = str(e)
+        s["error"] = redact_diagnostic(e)
     s["duration_ms"] = round((time.time() - t0) * 1000, 1)
     results.append(s)
 
@@ -200,7 +212,7 @@ async def _run_test():
                 )
     except Exception as e:
         s["status"] = "fail"
-        s["error"] = str(e)
+        s["error"] = redact_diagnostic(e)
     s["duration_ms"] = round((time.time() - t0) * 1000, 1)
     results.append(s)
 
@@ -214,11 +226,18 @@ async def _run_test():
             # Create test user
             await session.execute(
                 text(
-                    "INSERT INTO users (id, email, username, password_hash, is_active, created_at, updated_at) "
+                    "INSERT INTO users (id, email, username, password_hash, is_active, "
+                    "created_at, updated_at) "
                     "VALUES (:id, :email, :username, :pw, true, :ca, :ua)"
                 ),
-                {"id": _TEST_USER_ID, "email": _TEST_EMAIL, "username": _TEST_USERNAME,
-                 "pw": "e2e_test_hash", "ca": now, "ua": now},
+                {
+                    "id": _TEST_USER_ID,
+                    "email": _TEST_EMAIL,
+                    "username": _TEST_USERNAME,
+                    "pw": "e2e_test_hash",
+                    "ca": now,
+                    "ua": now,
+                },
             )
             await session.flush()
 
@@ -229,8 +248,14 @@ async def _run_test():
                     "INSERT INTO projects (id, user_id, name, description, created_at, updated_at) "
                     "VALUES (:id, :uid, :name, :desc, :ca, :ua)"
                 ),
-                {"id": project_id, "uid": _TEST_USER_ID, "name": "E2E Test Project",
-                 "desc": "Automated test", "ca": now, "ua": now},
+                {
+                    "id": project_id,
+                    "uid": _TEST_USER_ID,
+                    "name": "E2E Test Project",
+                    "desc": "Automated test",
+                    "ca": now,
+                    "ua": now,
+                },
             )
             await session.flush()
 
@@ -239,12 +264,22 @@ async def _run_test():
             file_hash = hashlib.sha256(_TEST_FILE_CONTENT).hexdigest()
             await session.execute(
                 text(
-                    "INSERT INTO paradox_dbs (id, project_id, user_id, name, latest_version, latest_message_id, file_hash, created_at, updated_at) "
+                    "INSERT INTO paradox_dbs "
+                    "(id, project_id, user_id, name, latest_version, latest_message_id, "
+                    "file_hash, created_at, updated_at) "
                     "VALUES (:id, :pid, :uid, :name, :ver, :mid, :fh, :ca, :ua)"
                 ),
-                {"id": db_id, "pid": project_id, "uid": _TEST_USER_ID,
-                 "name": _TEST_DB_NAME, "ver": 1, "mid": uploaded_message_id,
-                 "fh": file_hash, "ca": now, "ua": now},
+                {
+                    "id": db_id,
+                    "pid": project_id,
+                    "uid": _TEST_USER_ID,
+                    "name": _TEST_DB_NAME,
+                    "ver": 1,
+                    "mid": uploaded_message_id,
+                    "fh": file_hash,
+                    "ca": now,
+                    "ua": now,
+                },
             )
             await session.flush()
 
@@ -252,12 +287,21 @@ async def _run_test():
             ver_id = str(uuid.uuid4())
             await session.execute(
                 text(
-                    "INSERT INTO database_versions (id, db_id, version_number, file_hash, file_size, message_id, created_by, created_at) "
+                    "INSERT INTO database_versions "
+                    "(id, db_id, version_number, file_hash, file_size, message_id, "
+                    "created_by, created_at) "
                     "VALUES (:id, :dbid, :ver, :fh, :fs, :mid, :cb, :ca)"
                 ),
-                {"id": ver_id, "dbid": db_id, "ver": 1, "fh": file_hash,
-                 "fs": len(_TEST_FILE_CONTENT), "mid": uploaded_message_id,
-                 "cb": _TEST_USER_ID, "ca": now},
+                {
+                    "id": ver_id,
+                    "dbid": db_id,
+                    "ver": 1,
+                    "fh": file_hash,
+                    "fs": len(_TEST_FILE_CONTENT),
+                    "mid": uploaded_message_id,
+                    "cb": _TEST_USER_ID,
+                    "ca": now,
+                },
             )
             await session.commit()
 
@@ -280,7 +324,7 @@ async def _run_test():
                 s["error"] = "Row not found after insert"
     except Exception as e:
         s["status"] = "fail"
-        s["error"] = str(e)
+        s["error"] = redact_diagnostic(e)
     s["duration_ms"] = round((time.time() - t0) * 1000, 1)
     results.append(s)
 
@@ -289,18 +333,31 @@ async def _run_test():
     t0 = time.time()
     try:
         async with async_session_factory() as session:
-            await session.execute(text("DELETE FROM database_versions WHERE created_by = :uid"), {"uid": _TEST_USER_ID})
-            await session.execute(text("DELETE FROM sync_log WHERE user_id = :uid"), {"uid": _TEST_USER_ID})
-            await session.execute(text("DELETE FROM conflict_log WHERE user_id = :uid"), {"uid": _TEST_USER_ID})
-            await session.execute(text("DELETE FROM database_backups WHERE user_id = :uid"), {"uid": _TEST_USER_ID})
-            await session.execute(text("DELETE FROM paradox_dbs WHERE user_id = :uid"), {"uid": _TEST_USER_ID})
-            await session.execute(text("DELETE FROM projects WHERE user_id = :uid"), {"uid": _TEST_USER_ID})
+            await session.execute(
+                text("DELETE FROM database_versions WHERE created_by = :uid"),
+                {"uid": _TEST_USER_ID},
+            )
+            await session.execute(
+                text("DELETE FROM sync_log WHERE user_id = :uid"), {"uid": _TEST_USER_ID}
+            )
+            await session.execute(
+                text("DELETE FROM conflict_log WHERE user_id = :uid"), {"uid": _TEST_USER_ID}
+            )
+            await session.execute(
+                text("DELETE FROM database_backups WHERE user_id = :uid"), {"uid": _TEST_USER_ID}
+            )
+            await session.execute(
+                text("DELETE FROM paradox_dbs WHERE user_id = :uid"), {"uid": _TEST_USER_ID}
+            )
+            await session.execute(
+                text("DELETE FROM projects WHERE user_id = :uid"), {"uid": _TEST_USER_ID}
+            )
             await session.execute(text("DELETE FROM users WHERE id = :uid"), {"uid": _TEST_USER_ID})
             await session.commit()
         s["status"] = "pass"
     except Exception as e:
         s["status"] = "fail"
-        s["error"] = str(e)
+        s["error"] = redact_diagnostic(e)
     s["duration_ms"] = round((time.time() - t0) * 1000, 1)
     results.append(s)
 
@@ -315,7 +372,14 @@ async def _run_test():
     t0 = time.time()
     try:
         # Send header
-        await log_operation("e2e_test", f"E2E Test Run — {passed}/{len(results)} passed | {total_ms}ms | {'PASS' if failed == 0 else 'FAIL'}", "success" if failed == 0 else "fail")
+        await log_operation(
+            "e2e_test",
+            (
+                f"E2E Test Run — {passed}/{len(results)} passed | {total_ms}ms | "
+                f"{'PASS' if failed == 0 else 'FAIL'}"
+            ),
+            "success" if failed == 0 else "fail",
+        )
 
         # Send each step
         for r in results:
@@ -323,12 +387,16 @@ async def _run_test():
             log_detail = f"{r['status'].upper()} — {r['duration_ms']}ms"
             if r["error"]:
                 log_detail += f" — {r['error'][:200]}"
-            await log_operation("e2e_test", f"{icon} {r['name']}: {log_detail}", "success" if r["status"] == "pass" else "fail" if r["status"] == "fail" else "info")
+            await log_operation(
+                "e2e_test",
+                f"{icon} {r['name']}: {log_detail}",
+                "success" if r["status"] == "pass" else "fail" if r["status"] == "fail" else "info",
+            )
 
         s["status"] = "pass"
     except Exception as e:
         s["status"] = "fail"
-        s["error"] = str(e)
+        s["error"] = redact_diagnostic(e)
     s["duration_ms"] = round((time.time() - t0) * 1000, 1)
     results.append(s)
 
@@ -355,7 +423,7 @@ async def _run_test():
 async def run_e2e_test(user: User = Depends(get_current_user)):
     """Run full end-to-end integration test suite.
 
-    Tests live connectivity to PostgreSQL, Redis, Telegram Bot API,
+    Tests live connectivity to PostgreSQL advisory locks, Telegram Bot API,
     storage chat, database schema, upload/download round-trip,
     and registry read/write.
 
@@ -378,7 +446,7 @@ async def run_e2e_test(user: User = Depends(get_current_user)):
                     "name": "test_runner",
                     "status": "fail",
                     "duration_ms": 0,
-                    "error": f"{e}\n{traceback.format_exc()}",
+                    "error": redact_diagnostic(f"{e}\n{traceback.format_exc()}"),
                 }
             ],
         }

@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import hashlib
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import datetime
-from typing import Any, Callable, Awaitable
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
@@ -25,7 +26,6 @@ from ..config import settings
 from ..crypto import encrypt_data
 from ..database import async_session_factory, get_db
 from ..models import DatabaseVersion, ParadoxDB, SyncLog, User
-from ..routers.databases import RedisLock
 from ..services.session_engine import (
     SqlExecutionError,
     SqlSession,
@@ -33,7 +33,9 @@ from ..services.session_engine import (
     is_commit,
 )
 from ..services.telegram import TelegramClient, TelegramError
+from ..startup_diagnostics import redact_diagnostic
 from ..telegram_logger import log_operation
+from ..version_lock import VersionWriteLockTimeoutError, acquire_version_write_lock
 
 router = APIRouter(prefix="/v1", tags=["sql"])
 
@@ -78,15 +80,17 @@ async def _load_snapshot(paradox_db: ParadoxDB) -> tuple[bytes, int]:
             file_id=paradox_db.latest_file_id or "",
         )
     except TelegramError as e:
-        raise HTTPException(status_code=502, detail=f"Telegram download failed: {e}")
+        raise HTTPException(
+            status_code=502, detail=f"Telegram download failed: {redact_diagnostic(e)}"
+        )
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Snapshot download failed: {e}")
+        raise HTTPException(
+            status_code=502, detail=f"Snapshot download failed: {redact_diagnostic(e)}"
+        )
     return file_bytes, paradox_db.latest_version
 
 
-async def persist_snapshot(
-    user_id, database_id: str, session: SqlSession, raw: bytes
-) -> int:
+async def persist_snapshot(user_id, database_id: str, session: SqlSession, raw: bytes) -> int:
     """Push the session's SQLite bytes to Telegram as a new version.
 
     Re-encrypts to match the stored format (plaintext stays plaintext;
@@ -96,23 +100,22 @@ async def persist_snapshot(
     if session.mode == "encrypted":
         payload = encrypt_data(raw, session.passphrase)
 
-    lock = RedisLock()
-    lock_key = f"{user_id}:{database_id}"
-    try:
-        acquired = await lock.acquire(lock_key, timeout=settings.lock_timeout_seconds)
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"lock_error: {e}")
-    if not acquired:
-        raise HTTPException(status_code=503, detail="lock_timeout")
-
     async with async_session_factory() as db:
         try:
-            result = await db.execute(
-                select(ParadoxDB).where(
-                    ParadoxDB.id == database_id, ParadoxDB.user_id == user_id
+            try:
+                paradox_db = await acquire_version_write_lock(
+                    db,
+                    user_id=user_id,
+                    database_id=database_id,
+                    timeout=settings.lock_timeout_seconds,
                 )
-            )
-            paradox_db = result.scalar_one_or_none()
+            except VersionWriteLockTimeoutError as exc:
+                raise HTTPException(status_code=503, detail="lock_timeout") from exc
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail=(f"PostgreSQL version lock unavailable: {redact_diagnostic(exc)}"),
+                ) from exc
             if not paradox_db:
                 raise HTTPException(status_code=404, detail="Database not found")
 
@@ -137,7 +140,10 @@ async def persist_snapshot(
                     settings.telegram_storage_chat_id, payload, caption
                 )
             except TelegramError as e:
-                raise HTTPException(status_code=502, detail=f"Telegram upload failed: {e}")
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Telegram upload failed: {redact_diagnostic(e)}",
+                )
 
             paradox_db.latest_version = new_version
             paradox_db.latest_message_id = msg_id
@@ -183,11 +189,6 @@ async def persist_snapshot(
         except Exception:
             await db.rollback()
             raise
-        finally:
-            try:
-                await lock.release(lock_key)
-            except Exception:
-                pass
 
 
 def _session_info(session: SqlSession) -> dict:
@@ -201,9 +202,7 @@ def _session_info(session: SqlSession) -> dict:
     }
 
 
-async def _get_or_warm(
-    database_id: str, user: User, passphrase: str, db: AsyncSession
-):
+async def _get_or_warm(database_id: str, user: User, passphrase: str, db: AsyncSession):
     paradox_db = await _owned_database(database_id, user, db)
     key = f"{user.id}:{database_id}"
     session = session_store.get(key)
@@ -214,11 +213,9 @@ async def _get_or_warm(
     if session is None:
         snapshot, version = await _load_snapshot(paradox_db)
         try:
-            session, _ = await session_store.get_or_create(
-                key, passphrase, snapshot, version
-            )
+            session, _ = await session_store.get_or_create(key, passphrase, snapshot, version)
         except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+            raise HTTPException(status_code=400, detail=redact_diagnostic(e))
         if session_store.get_persister(key) is None:
             session_store.bind_persister(key, _make_persister(user.id, database_id))
     return session, paradox_db
@@ -226,9 +223,7 @@ async def _get_or_warm(
 
 async def _owned_database(database_id: str, user: User, db: AsyncSession):
     result = await db.execute(
-        select(ParadoxDB).where(
-            ParadoxDB.id == database_id, ParadoxDB.user_id == user.id
-        )
+        select(ParadoxDB).where(ParadoxDB.id == database_id, ParadoxDB.user_id == user.id)
     )
     return result.scalar_one_or_none()
 
@@ -247,13 +242,9 @@ async def execute_sql(
     session, paradox_db = await _get_or_warm(database_id, user, body.passphrase, db)
 
     try:
-        result = await session_store.execute(
-            session, body.sql, body.params, body.executescript
-        )
+        result = await session_store.execute(session, body.sql, body.params, body.executescript)
     except SqlExecutionError as e:
-        return JSONResponse(
-            status_code=400, content={"error": "sql_error", "detail": e.message}
-        )
+        return JSONResponse(status_code=400, content={"error": "sql_error", "detail": e.message})
 
     persisted_version = None
     if body.flush or (not body.executescript and is_commit(body.sql)):

@@ -2,21 +2,15 @@
 
 from __future__ import annotations
 
-import re
 from datetime import UTC, datetime
+
+from app.startup_diagnostics import redact_diagnostic
 
 _state: dict[str, object] = {
     "status": "starting",
     "phase": "initializing",
     "started_at": datetime.now(UTC).isoformat(),
 }
-
-
-def _redact(value: str) -> str:
-    """Avoid returning passwords or connection-string credentials in diagnostics."""
-    value = re.sub(r"(://[^:/@]+:)[^@]+(@)", r"\1[REDACTED]\2", value)
-    value = re.sub(r"(?i)(password|passwd|pwd)=([^&\s]+)", r"\1=[REDACTED]", value)
-    return value[:500]
 
 
 def mark_ready() -> None:
@@ -34,7 +28,7 @@ def mark_degraded(phase: str, exc: BaseException) -> None:
         status="degraded",
         phase=phase,
         error_type=type(exc).__name__,
-        error=_redact(str(exc)) or "no error message",
+        error=redact_diagnostic(str(exc)) or "no error message",
         failed_at=datetime.now(UTC).isoformat(),
     )
 

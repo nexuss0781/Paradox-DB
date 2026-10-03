@@ -336,12 +336,11 @@ def mock_auth(mock_session):
 
 
 @pytest.fixture(autouse=True)
-def mock_redis_and_rate_limit():
-    """Mock the Redis-based lock and rate limiter so tests don't need Redis."""
-    with patch("app.routers.databases._upload_lock") as mock_lock, \
+def mock_postgres_lock_and_rate_limit():
+    """Mock the transaction advisory lock and rate limiter for e2e tests."""
+    with patch("app.version_lock.postgres_advisory_lock") as mock_lock, \
          patch("app.routers.databases.rate_limiter") as mock_rl:
         mock_lock.acquire = AsyncMock(return_value=True)
-        mock_lock.release = AsyncMock()
         mock_rl.check = MagicMock(return_value=True)
         yield mock_lock, mock_rl
 
@@ -466,8 +465,7 @@ async def test_full_sync_flow(client: AsyncClient, mock_auth):
     assert upload_data["message_id"] == "200"
 
     with patch("app.routers.databases.TelegramClient") as MockDL:
-        MockDL.return_value.download_file_by_id = AsyncMock(return_value=file_bytes)
-        MockDL.return_value.download_file = AsyncMock(return_value=file_bytes)
+        MockDL.return_value.download_best = AsyncMock(return_value=file_bytes)
 
         resp_download = await client.get(
             "/v1/download",
@@ -479,8 +477,9 @@ async def test_full_sync_flow(client: AsyncClient, mock_auth):
     assert resp_download.content == file_bytes
     assert resp_download.headers["X-Version"] == "1"
     assert resp_download.headers["content-type"] == "application/octet-stream"
-    MockDL.return_value.download_file_by_id.assert_awaited_once()
-    MockDL.return_value.download_file.assert_not_awaited()
+    MockDL.return_value.download_best.assert_awaited_once_with(
+        channel_id="", message_id="200", file_id="FILE_200"
+    )
 
 
 @pytest.mark.asyncio
@@ -674,7 +673,7 @@ async def test_download_specific_version(client: AsyncClient, mock_auth):
     session.add_upload(user.id, "specific", 2, "401", v2_bytes)
 
     with patch("app.routers.databases.TelegramClient") as MockTG:
-        MockTG.return_value.download_file = AsyncMock(return_value=v1_bytes)
+        MockTG.return_value.download_best = AsyncMock(return_value=v1_bytes)
 
         resp = await client.get(
             "/v1/download",
@@ -685,20 +684,22 @@ async def test_download_specific_version(client: AsyncClient, mock_auth):
     assert resp.status_code == 200
     assert resp.content == v1_bytes
     assert resp.headers["X-Version"] == "1"
-    MockTG.return_value.download_file.assert_awaited_once()
-    MockTG.return_value.download_file_by_id.assert_not_awaited()
+    MockTG.return_value.download_best.assert_awaited_once_with(
+        channel_id="", message_id="400", file_id=""
+    )
 
 
 @patch("app.routers.databases.TelegramClient")
-async def test_download_uses_file_id_when_available(MockTG, client: AsyncClient, mock_auth):
-    """download_best fetches via getFile when a file_id is recorded."""
+async def test_download_route_passes_file_id_to_telegram_client(
+    MockTG, client: AsyncClient, mock_auth
+):
+    """The route passes the stored Telegram file_id to the download service."""
     user, session = mock_auth
     session.register_db(user.id, "byfile")
     bytes_v1 = b"file_id bytes v1"
     session.add_upload(user.id, "byfile", 1, "800", bytes_v1, file_id="FILE_800")
 
-    MockTG.return_value.download_file_by_id = AsyncMock(return_value=bytes_v1)
-    MockTG.return_value.download_file = AsyncMock(side_effect=AssertionError("forwardMessage should not run"))
+    MockTG.return_value.download_best = AsyncMock(return_value=bytes_v1)
 
     resp = await client.get(
         "/v1/download",
@@ -708,24 +709,22 @@ async def test_download_uses_file_id_when_available(MockTG, client: AsyncClient,
 
     assert resp.status_code == 200
     assert resp.content == bytes_v1
-    MockTG.return_value.download_file_by_id.assert_awaited_once()
-    MockTG.return_value.download_file.assert_not_awaited()
+    MockTG.return_value.download_best.assert_awaited_once_with(
+        channel_id="", message_id="800", file_id="FILE_800"
+    )
 
 
 @patch("app.routers.databases.TelegramClient")
-async def test_download_falls_back_when_file_id_stale(MockTG, client: AsyncClient, mock_auth):
-    """A stale/unreadable file_id falls back to the message_id lookup."""
-    from app.services.telegram import TelegramPermanentError
-
+async def test_download_route_passes_stale_file_id_to_service(
+    MockTG, client: AsyncClient, mock_auth
+):
+    """The route forwards both identifiers so the service can fall back."""
     user, session = mock_auth
     session.register_db(user.id, "stale")
     bytes_v1 = b"fallback bytes v1"
     session.add_upload(user.id, "stale", 1, "810", bytes_v1, file_id="STALE_FILE_ID")
 
-    MockTG.return_value.download_file_by_id = AsyncMock(
-        side_effect=TelegramPermanentError("wrong file identifier")
-    )
-    MockTG.return_value.download_file = AsyncMock(return_value=bytes_v1)
+    MockTG.return_value.download_best = AsyncMock(return_value=bytes_v1)
 
     resp = await client.get(
         "/v1/download",
@@ -735,8 +734,9 @@ async def test_download_falls_back_when_file_id_stale(MockTG, client: AsyncClien
 
     assert resp.status_code == 200
     assert resp.content == bytes_v1
-    MockTG.return_value.download_file_by_id.assert_awaited_once()
-    MockTG.return_value.download_file.assert_awaited_once()
+    MockTG.return_value.download_best.assert_awaited_once_with(
+        channel_id="", message_id="810", file_id="STALE_FILE_ID"
+    )
 
 
 # ── 5. Rollback flow ───────────────────────────────────────────────
@@ -755,7 +755,7 @@ async def test_rollback_flow(client: AsyncClient, mock_auth):
     session.add_upload(user.id, "rollback", 2, "501", v2_bytes)
 
     with patch("app.routers.databases.TelegramClient") as MockTG:
-        MockTG.return_value.download_file = AsyncMock(return_value=v1_bytes)
+        MockTG.return_value.download_best = AsyncMock(return_value=v1_bytes)
         MockTG.return_value.upload_file_with_file_id = AsyncMock(return_value=("502", "FILE_502"))
 
         resp = await client.post(
