@@ -1,5 +1,5 @@
-import asyncio
 import logging
+import uuid
 
 import httpx
 from fastapi import APIRouter
@@ -10,6 +10,8 @@ from app.config import settings
 from app.database import async_session_factory
 from app.metrics import registry_operations, telegram_api_errors
 from app.models import HealthResponse
+from app.postgres_lock import postgres_advisory_lock
+from app.startup_diagnostics import redact_diagnostic
 from app.startup_state import snapshot
 from app.telegram_logger import log_operation
 
@@ -19,7 +21,7 @@ router = APIRouter()
 
 
 @router.get("/health", response_model=HealthResponse)
-async def health_check():
+async def health_check() -> HealthResponse:
     state = snapshot()
     status = "ok" if state.get("status") == "ready" else "degraded"
     await log_operation("health", f"Health check: {status}", "success")
@@ -30,26 +32,21 @@ async def check_postgres() -> None:
     try:
         async with async_session_factory() as session:
             await session.execute(text("SELECT 1"))
+            lock_acquired = await postgres_advisory_lock.acquire(
+                session,
+                f"health-check:{uuid.uuid4().hex}",
+                timeout=0,
+            )
+            if not lock_acquired:
+                raise RuntimeError("PostgreSQL advisory locks are unavailable")
         registry_operations.labels(operation="health_check_pg").inc()
     except Exception:
         registry_operations.labels(operation="health_check_pg_fail").inc()
         raise
 
 
-async def check_redis() -> None:
-    import redis.asyncio as aioredis
-
-    try:
-        async with aioredis.from_url(settings.redis_url, decode_responses=True) as client:
-            await client.ping()
-        registry_operations.labels(operation="health_check_redis").inc()
-    except Exception:
-        registry_operations.labels(operation="health_check_redis_fail").inc()
-        raise
-
-
-@router.get("/health/ready")
-async def readiness_check():
+@router.get("/health/ready", response_model=None)
+async def readiness_check() -> HealthResponse | JSONResponse:
     errors: list[str] = []
     state = snapshot()
     if state.get("status") != "ready":
@@ -57,26 +54,18 @@ async def readiness_check():
         error = state.get("error", "application startup is incomplete")
         errors.append(f"startup ({phase}): {error}")
 
-    async def _pg():
-        try:
-            await check_postgres()
-        except Exception as e:
-            errors.append(f"postgres: {e}")
-
-    async def _redis():
-        try:
-            await check_redis()
-        except Exception as e:
-            errors.append(f"redis: {e}")
-
-    await asyncio.gather(_pg(), _redis())
+    try:
+        await check_postgres()
+    except Exception as exc:
+        errors.append(f"postgres/advisory-lock: {redact_diagnostic(exc)}")
 
     if errors:
-        logger.warning("readiness check failed: %s", errors)
-        await log_operation("health", f"Readiness failed: {errors}", "fail")
+        safe_errors = [redact_diagnostic(error) for error in errors]
+        logger.warning("readiness check failed: %s", safe_errors)
+        await log_operation("health", f"Readiness failed: {safe_errors}", "fail")
         return JSONResponse(
             status_code=503,
-            content={"status": "not_ready", "errors": errors},
+            content={"status": "not_ready", "errors": safe_errors},
         )
     await log_operation("health", "Readiness check: ready", "success")
     return HealthResponse(status="ready")
@@ -85,8 +74,8 @@ async def readiness_check():
 TELEGRAM_CHECK_TIMEOUT = 5.0
 
 
-@router.get("/health/telegram")
-async def telegram_check():
+@router.get("/health/telegram", response_model=None)
+async def telegram_check() -> HealthResponse | JSONResponse:
     token = settings.telegram_bot_token
     if not token:
         await log_operation("health", "Telegram check: not configured", "warn")
@@ -105,21 +94,34 @@ async def telegram_check():
                     return HealthResponse(status="ok")
             if resp.status_code == 401:
                 telegram_api_errors.labels(error_type="http_401").inc()
-                await log_operation("health", "Telegram check: bot token invalid or revoked", "fail")
+                await log_operation(
+                    "health", "Telegram check: bot token invalid or revoked", "fail"
+                )
                 return JSONResponse(
                     status_code=503,
-                    content={"status": "invalid_token", "error": "TELEGRAM_BOT_TOKEN is invalid or revoked"},
+                    content={
+                        "status": "invalid_token",
+                        "error": "TELEGRAM_BOT_TOKEN is invalid or revoked",
+                    },
                 )
             telegram_api_errors.labels(error_type=f"http_{resp.status_code}").inc()
-            await log_operation("health", f"Telegram check: unreachable (HTTP {resp.status_code})", "fail")
+            await log_operation(
+                "health",
+                f"Telegram check: unreachable (HTTP {resp.status_code})",
+                "fail",
+            )
             return JSONResponse(
                 status_code=503,
-                content={"status": "unreachable", "error": f"Telegram API returned {resp.status_code}"},
+                content={
+                    "status": "unreachable",
+                    "error": f"Telegram API returned {resp.status_code}",
+                },
             )
-    except httpx.HTTPError as e:
+    except httpx.HTTPError as exc:
         telegram_api_errors.labels(error_type="network_error").inc()
-        await log_operation("health", f"Telegram check: network error — {e}", "fail")
+        safe_error = redact_diagnostic(exc)
+        await log_operation("health", f"Telegram check: network error — {safe_error}", "fail")
         return JSONResponse(
             status_code=503,
-            content={"status": "unreachable", "error": str(e)},
+            content={"status": "unreachable", "error": safe_error},
         )

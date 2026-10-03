@@ -56,7 +56,6 @@ def _safe_environment() -> dict[str, dict[str, object]]:
 def _setting_status() -> dict[str, dict[str, object]]:
     names = (
         "DATABASE_URL",
-        "REDIS_URL",
         "TELEGRAM_BOT_TOKEN",
         "TELEGRAM_API_ID",
         "TELEGRAM_API_HASH",
@@ -93,9 +92,7 @@ async def debug_index() -> dict[str, object]:
 async def debug_environment() -> dict[str, object]:
     """Show every runtime environment variable with secret values redacted."""
     render_keys = {
-        name: value
-        for name, value in _safe_environment().items()
-        if name.startswith("RENDER_")
+        name: value for name, value in _safe_environment().items() if name.startswith("RENDER_")
     }
     return {
         "timestamp_utc": datetime.now(UTC).isoformat(),
@@ -127,9 +124,11 @@ async def debug_config() -> dict[str, object]:
     """Show whether required service configuration is present, never its values."""
     return {
         "required_environment": _setting_status(),
+        "database_lock_backend": "postgresql_transaction_advisory",
         "defaults_in_use": {
-            "database_url": settings.database_url.startswith("postgresql+asyncpg://postgres:postgres@localhost"),
-            "redis_url": settings.redis_url == "redis://localhost:6379/0",
+            "database_url": settings.database_url.startswith(
+                "postgresql+asyncpg://postgres:postgres@localhost"
+            ),
             "jwt_secret": settings.jwt_secret == "change-me-in-production",
             "api_key_salt": settings.api_key_salt == "change-me-in-production",
         },

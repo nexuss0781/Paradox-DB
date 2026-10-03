@@ -1,4 +1,3 @@
-import traceback
 import uuid
 from contextlib import asynccontextmanager
 
@@ -12,15 +11,16 @@ from app.halt import maybe_halt_on_rate_limit
 from app.logging_config import setup_logging
 from app.metrics import MetricsMiddleware, get_metrics
 from app.routers import auth, databases, debug, health, notifications, projects, sql, test
+from app.routers.sql import session_store
 from app.services.telegram import (
     TelegramError,
     TelegramRateLimitError,
     TelegramServerError,
     TelegramUnauthorizedError,
 )
+from app.startup_diagnostics import redact_diagnostic
 from app.startup_state import mark_degraded, mark_ready
 from app.telegram_logger import log_operation
-from app.routers.sql import session_store
 
 
 @asynccontextmanager
@@ -35,7 +35,10 @@ async def lifespan(app: FastAPI):
         mark_degraded("database_initialization", exc)
         import logging
 
-        logging.getLogger(__name__).exception("Database initialization failed")
+        logging.getLogger(__name__).error(
+            "Database initialization failed: %s",
+            redact_diagnostic(f"{type(exc).__name__}: {exc}"),
+        )
     else:
         mark_ready()
     session_store.start()
@@ -46,7 +49,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Paradox-DB Gateway",
-version="2.5.6",
+    version="2.5.6",
     description="Web Gateway for Telegram-synced SQLite database",
     lifespan=lifespan,
 )
@@ -64,19 +67,22 @@ app.add_middleware(MetricsMiddleware)
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    tb = traceback.format_exc()
-    route = getattr(request, "url", "unknown")
+    detail = redact_diagnostic(f"{type(exc).__name__}: {exc}")
     try:
         await log_operation(
             "gateway",
-            f"Unhandled exception on {request.method} {route}: {type(exc).__name__}: {exc}\n{tb}",
+            f"Unhandled exception on {request.method} {request.url.path}: {detail}",
             "fail",
         )
     except Exception:
         pass
     return JSONResponse(
         status_code=500,
-        content={"error": "internal_error", "detail": f"{type(exc).__name__}: {exc}"},
+        content={
+            "error": "internal_error",
+            "error_type": type(exc).__name__,
+            "detail": detail,
+        },
     )
 
 
@@ -103,21 +109,22 @@ async def telegram_error_handler(request: Request, exc: TelegramError):
             content={"error": "rate_limited", "retry_after": exc.retry_after},
         )
     if isinstance(exc, TelegramUnauthorizedError):
+        detail = redact_diagnostic(exc)
         return JSONResponse(
             status_code=503,
             content={
                 "error": "telegram_unauthorized",
-                "detail": f"Telegram bot token is invalid or revoked: {exc}",
+                "detail": f"Telegram bot token is invalid or revoked: {detail}",
             },
         )
     if isinstance(exc, TelegramServerError):
         return JSONResponse(
             status_code=502,
-            content={"error": "telegram_unavailable", "detail": str(exc)},
+            content={"error": "telegram_unavailable", "detail": redact_diagnostic(exc)},
         )
     return JSONResponse(
         status_code=502,
-        content={"error": "telegram_failed", "detail": str(exc)},
+        content={"error": "telegram_failed", "detail": redact_diagnostic(exc)},
     )
 
 

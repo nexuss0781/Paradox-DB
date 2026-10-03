@@ -5,10 +5,14 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.main import app
+from app.startup_state import mark_ready
 
 
 @pytest.fixture
 async def client():
+    # ASGITransport does not run the lifespan unless explicitly wrapped.
+    # Health endpoint unit tests assume the app has completed startup.
+    mark_ready()
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
@@ -29,11 +33,9 @@ async def test_health_liveness(client: AsyncClient):
 
 @pytest.mark.asyncio
 @patch("app.routers.health.check_postgres", new_callable=AsyncMock)
-@patch("app.routers.health.check_redis", new_callable=AsyncMock)
-async def test_readiness_ok(mock_redis, mock_pg, client: AsyncClient):
-    """3.1.2 GET /health/ready returns 200 when PG + Redis up"""
+async def test_readiness_ok(mock_pg, client: AsyncClient):
+    """3.1.2 GET /health/ready returns 200 when PostgreSQL locking works"""
     mock_pg.return_value = None
-    mock_redis.return_value = None
     response = await client.get("/health/ready")
     assert response.status_code == 200
     assert response.json()["status"] == "ready"
@@ -41,11 +43,9 @@ async def test_readiness_ok(mock_redis, mock_pg, client: AsyncClient):
 
 @pytest.mark.asyncio
 @patch("app.routers.health.check_postgres", new_callable=AsyncMock)
-@patch("app.routers.health.check_redis", new_callable=AsyncMock)
-async def test_readiness_pg_down(mock_redis, mock_pg, client: AsyncClient):
+async def test_readiness_pg_down(mock_pg, client: AsyncClient):
     """3.1.3 GET /health/ready returns 503 when PG down"""
     mock_pg.side_effect = Exception("connection refused")
-    mock_redis.return_value = None
     response = await client.get("/health/ready")
     assert response.status_code == 503
     body = response.json()
@@ -55,16 +55,14 @@ async def test_readiness_pg_down(mock_redis, mock_pg, client: AsyncClient):
 
 @pytest.mark.asyncio
 @patch("app.routers.health.check_postgres", new_callable=AsyncMock)
-@patch("app.routers.health.check_redis", new_callable=AsyncMock)
-async def test_readiness_redis_down(mock_redis, mock_pg, client: AsyncClient):
-    """3.1.4 GET /health/ready returns 503 when Redis down"""
-    mock_pg.return_value = None
-    mock_redis.side_effect = Exception("connection refused")
+async def test_readiness_advisory_lock_unavailable(mock_pg, client: AsyncClient):
+    """3.1.4 Readiness reports PostgreSQL lock errors as actionable JSON."""
+    mock_pg.side_effect = RuntimeError("PostgreSQL advisory lock unavailable")
     response = await client.get("/health/ready")
     assert response.status_code == 503
     body = response.json()
     assert body["status"] == "not_ready"
-    assert any("redis" in e for e in body["errors"])
+    assert any("postgres/advisory-lock" in e for e in body["errors"])
 
 
 def _make_mock_response(status_code: int, json_data: dict) -> MagicMock:
@@ -277,4 +275,4 @@ async def test_root_endpoint(client: AsyncClient):
     assert response.status_code == 200
     body = response.json()
     assert body["service"] == "paradox-db-gateway"
-assert body["version"] == "2.5.6"
+    assert body["version"] == "2.5.6"
