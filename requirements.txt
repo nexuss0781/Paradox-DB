@@ -7,10 +7,11 @@ asyncpg>=0.29.0
 httpx>=0.27.0
 # Resolve the platform-native CPython 3.13 wheels published by Wasix.
 --extra-index-url https://python-registry.wasmer.app/all/simple/
-# Explicit WASIX-compatible wheels: the deployed Python 3.13 runtime must load
-# pydantic-core's native extension, not a host-platform/PyPI-only build.
-pydantic==2.13.4+wasix.2
-pydantic-core==2.46.4+wasix.3
+# Pin upstream releases without the WASIX local-version suffix: Anybuild's
+# cross-target resolver selects their WASIX wheels, while its host-side `uv add`
+# can resolve the same releases from PyPI.
+pydantic==2.13.4
+pydantic-core==2.46.4
 pydantic-settings>=2.3.0
 cryptography>=41.0
 PyJWT>=2.8.0

@@ -1,0 +1,17 @@
+kind: wasmer.io/App.v0
+name: paradox-db
+owner: nexuss0781
+app_id: da_n73IatAUWvp5
+package: .
+locality:
+  regions:
+    - fr-roub1
+capabilities:
+  database:
+    engine: postgres
+jobs:
+  - name: after_deploy
+    trigger: post-deployment
+    action:
+      execute:
+        command: after_deploy
