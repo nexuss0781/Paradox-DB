@@ -25,118 +25,87 @@ class NexussIdentity:
     user_id: str
     email: str | None
     name: str | None
+    avatar_url: str | None = None
+    project_id: str | None = None
+    provider: str | None = None
+    issuer: str | None = None
+    subject: str | None = None
+    permissions: tuple[str, ...] = ()
 
 
-def parse_nexuss_identity(payload: object) -> NexussIdentity:
-    """Validate the non-secret identity payload returned by Nexuss Auth."""
+def parse_nexuss_identity(payload: object, *, require_envx: bool | None = None) -> NexussIdentity:
+    """Validate the Nexuss Auth response contract and optional ENVX claims."""
     if not isinstance(payload, dict):
         raise HTTPException(status_code=502, detail="Invalid Nexuss Auth identity response")
     user = payload.get("user")
-    if (
-        not isinstance(user, dict)
-        or not isinstance(user.get("id"), str)
-        or not user["id"].strip()
-    ):
+    if not isinstance(user, dict) or not isinstance(user.get("id"), str) or not user["id"].strip():
         raise HTTPException(status_code=401, detail="Nexuss Auth credential is not signed in")
-    email = user.get("email")
-    name = user.get("name")
-    return NexussIdentity(
-        user_id=user["id"].strip(),
-        email=email.strip().lower() if isinstance(email, str) and email.strip() else None,
-        name=name.strip() if isinstance(name, str) and name.strip() else None,
-    )
+    auth = payload.get("auth")
+    if require_envx is None:
+        require_envx = settings.paradox_envx_only_auth_enabled
+    if require_envx:
+        if not isinstance(auth, dict):
+            raise HTTPException(status_code=401, detail="Nexuss Auth claims are required")
+        project = auth.get("projectId")
+        provider = auth.get("provider")
+        issuer = auth.get("issuer")
+        subject = auth.get("subject")
+        permissions = auth.get("permissions")
+        expected_project = settings.nexuss_auth_project_id.strip()
+        expected_permission = f"project:{expected_project}:access"
+        expected_issuer = settings.envx_oidc_issuer_url.strip()
+        if (not expected_project or project != expected_project or provider != "envx"
+                or not isinstance(issuer, str) or not issuer.strip() or issuer.strip() != expected_issuer
+                or not isinstance(subject, str) or not subject.strip()
+                or not isinstance(permissions, (list, tuple)) or expected_permission not in permissions):
+            raise HTTPException(status_code=401, detail="Nexuss Auth claims are invalid")
+    else:
+        project = auth.get("projectId") if isinstance(auth, dict) else None
+        provider = auth.get("provider") if isinstance(auth, dict) else None
+        issuer = auth.get("issuer") if isinstance(auth, dict) else None
+        subject = auth.get("subject") if isinstance(auth, dict) else None
+        permissions = auth.get("permissions", ()) if isinstance(auth, dict) else ()
+    email = user.get("email"); name = user.get("name"); avatar = user.get("avatarUrl")
+    return NexussIdentity(user_id=user["id"].strip(), email=email.strip().lower() if isinstance(email, str) and email.strip() else None, name=name.strip() if isinstance(name, str) and name.strip() else None, avatar_url=avatar.strip() if isinstance(avatar, str) and avatar.strip() else None, project_id=project.strip() if isinstance(project, str) and project.strip() else None, provider=provider.strip() if isinstance(provider, str) and provider.strip() else None, issuer=issuer.strip() if isinstance(issuer, str) and issuer.strip() else None, subject=subject.strip() if isinstance(subject, str) and subject.strip() else None, permissions=tuple(x for x in permissions if isinstance(x, str)))
 
 
 def _nexuss_config() -> tuple[str, str]:
     auth_url = settings.nexuss_auth_url.strip().rstrip("/")
     project_id = settings.nexuss_auth_project_id.strip()
     if not auth_url or not project_id:
-        raise HTTPException(
-            status_code=503,
-            detail="Nexuss Auth integration is not configured for this Paradox gateway",
-        )
+        raise HTTPException(status_code=503, detail="Nexuss Auth integration is not configured for this Paradox gateway")
     return auth_url, project_id
 
 
-async def verify_nexuss_api_key(api_key: str) -> NexussIdentity:
-    """Verify a project-scoped Nexuss token without logging or persisting it."""
+async def verify_nexuss_api_key(api_key: str, *, require_envx: bool = False) -> NexussIdentity:
     if not api_key.startswith("nxa_"):
         raise HTTPException(status_code=401, detail="Expected a Nexuss Auth API key")
     auth_url, project_id = _nexuss_config()
     try:
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
-            response = await client.get(
-                f"{auth_url}/v1/me",
-                params={"project_id": project_id},
-                headers={
-                    "authorization": f"Bearer {api_key}",
-                    "x-nex-auth-project": project_id,
-                },
-            )
+            response = await client.get(f"{auth_url}/v1/me", params={"project_id": project_id}, headers={"authorization": f"Bearer {api_key}", "x-nex-auth-project": project_id})
     except httpx.HTTPError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail="Nexuss Auth is temporarily unavailable",
-        ) from exc
-    if response.status_code in (401, 403):
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid or revoked Nexuss Auth API key",
-        )
-    if response.status_code >= 500:
-        raise HTTPException(status_code=503, detail="Nexuss Auth is temporarily unavailable")
-    if response.status_code != 200:
-        raise HTTPException(
-            status_code=502,
-            detail="Nexuss Auth identity verification failed",
-        )
-    try:
-        return parse_nexuss_identity(response.json())
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=502,
-            detail="Invalid Nexuss Auth identity response",
-        ) from exc
+        raise HTTPException(status_code=503, detail="Nexuss Auth is temporarily unavailable") from exc
+    if response.status_code in (401, 403): raise HTTPException(status_code=401, detail="Invalid or revoked Nexuss Auth API key")
+    if response.status_code >= 500: raise HTTPException(status_code=503, detail="Nexuss Auth is temporarily unavailable")
+    if response.status_code != 200: raise HTTPException(status_code=502, detail="Nexuss Auth identity verification failed")
+    try: return parse_nexuss_identity(response.json(), require_envx=require_envx)
+    except ValueError as exc: raise HTTPException(status_code=502, detail="Invalid Nexuss Auth identity response") from exc
 
 
-async def exchange_nexuss_handoff(handoff_token: str) -> NexussIdentity:
-    """Exchange a one-time Nexuss handoff from a trusted Paradox web callback."""
-    if not handoff_token:
-        raise HTTPException(status_code=400, detail="handoff_token is required")
+async def exchange_nexuss_handoff(handoff_token: str, *, require_envx: bool | None = None) -> NexussIdentity:
+    if not handoff_token: raise HTTPException(status_code=400, detail="handoff_token is required")
     auth_url, project_id = _nexuss_config()
     try:
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
-            response = await client.post(
-                f"{auth_url}/v1/handoff/exchange",
-                json={"projectId": project_id, "handoffToken": handoff_token},
-            )
-    except httpx.HTTPError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail="Nexuss Auth is temporarily unavailable",
-        ) from exc
-    if response.status_code in (400, 401, 403):
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid, expired, or replayed Nexuss handoff",
-        )
-    if response.status_code >= 500:
-        raise HTTPException(status_code=503, detail="Nexuss Auth is temporarily unavailable")
-    if response.status_code != 200:
-        raise HTTPException(
-            status_code=502,
-            detail="Nexuss Auth handoff verification failed",
-        )
-    try:
-        payload = response.json()
-        return parse_nexuss_identity(
-            {"user": payload.get("user") if isinstance(payload, dict) else None}
-        )
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=502,
-            detail="Invalid Nexuss Auth handoff response",
-        ) from exc
+            response = await client.post(f"{auth_url}/v1/handoff/exchange", json={"projectId": project_id, "handoffToken": handoff_token})
+    except httpx.HTTPError as exc: raise HTTPException(status_code=503, detail="Nexuss Auth is temporarily unavailable") from exc
+    if response.status_code in (400, 401, 403): raise HTTPException(status_code=401, detail="Invalid, expired, or replayed Nexuss handoff")
+    if response.status_code >= 500: raise HTTPException(status_code=503, detail="Nexuss Auth is temporarily unavailable")
+    if response.status_code != 200: raise HTTPException(status_code=502, detail="Nexuss Auth handoff verification failed")
+    try: return parse_nexuss_identity(response.json(), require_envx=require_envx)
+    except ValueError as exc: raise HTTPException(status_code=502, detail="Invalid Nexuss Auth handoff response") from exc
+
 
 
 def _external_username(identity: NexussIdentity) -> str:
@@ -175,6 +144,9 @@ async def provision_nexuss_user(identity: NexussIdentity, db: AsyncSession) -> "
         username=_external_username(identity),
         password_hash=None,
         nexuss_user_id=identity.user_id,
+        auth_project_id=identity.project_id, auth_provider=identity.provider,
+        auth_issuer=identity.issuer, auth_subject=identity.subject,
+        auth_permissions=",".join(identity.permissions) or None, avatar_url=identity.avatar_url,
     )
     db.add(user)
     await db.flush()

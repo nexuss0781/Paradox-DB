@@ -33,6 +33,13 @@ class User(Base):
     # for migration, while Nexuss-provisioned users have no local password.
     password_hash = Column(String(255), nullable=True)
     nexuss_user_id = Column(String(128), unique=True, nullable=True)
+    # Nullable external identity provenance; existing users are intentionally untouched.
+    auth_project_id = Column(String(128), nullable=True)
+    auth_provider = Column(String(64), nullable=True)
+    auth_issuer = Column(String(512), nullable=True)
+    auth_subject = Column(String(255), nullable=True)
+    auth_permissions = Column(Text, nullable=True)
+    avatar_url = Column(String(2048), nullable=True)
     api_key_hash = Column(String(64), unique=True, nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
@@ -56,6 +63,12 @@ class APIKey(Base):
     last_used_at = Column(DateTime, nullable=True)
     expires_at = Column(DateTime, nullable=True)
     revoked_at = Column(DateTime, nullable=True)
+    # Scope/provenance of credentials minted from a new SSO exchange.
+    auth_project_id = Column(String(128), nullable=True)
+    auth_provider = Column(String(64), nullable=True)
+    auth_issuer = Column(String(512), nullable=True)
+    auth_subject = Column(String(255), nullable=True)
+    auth_permissions = Column(Text, nullable=True)
 
     user = relationship("User", back_populates="api_keys")
 

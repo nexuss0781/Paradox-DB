@@ -27,6 +27,12 @@ class Settings(BaseSettings):
     # routing values, not Nexuss admin credentials or provider secrets.
     nexuss_auth_url: str = ""
     nexuss_auth_project_id: str = ""
+    # Exact HTTPS browser callback registered with Nexuss Auth; never derive from Host.
+    paradox_auth_callback_url: str = ""
+    # Enables ENVX-only login/exchanges; legacy nxa_ requests keep working until strict cutover.
+    # Existing local pk_ keys remain valid in either mode.
+    paradox_envx_only_auth_enabled: bool = False
+    envx_oidc_issuer_url: str = ""
     # Base64 Fernet key for encrypting canonical database_url metadata.
     # If empty, the implementation derives a stable key from JWT_SECRET.
     database_url_encryption_key: str = Field(default="", repr=False, exclude=True)
