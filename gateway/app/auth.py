@@ -8,6 +8,7 @@ X-API-Key header.
 import hashlib
 import secrets
 from datetime import datetime
+from hmac import compare_digest
 from typing import Optional
 
 import bcrypt
@@ -16,6 +17,7 @@ from fastapi.security import APIKeyHeader
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .config import settings
 from .database import get_db
 from .nexuss_auth import provision_nexuss_user, verify_nexuss_api_key
 
@@ -62,14 +64,26 @@ async def get_current_user(
     """Resolve the authenticated user from an active cloud-issued API key."""
     from .models import APIKey, User
 
+    cookie_api_key = request.cookies.get("paradox_api_key")
+    cookie_authenticated = not api_key and bool(cookie_api_key)
+    api_key = api_key or cookie_api_key
     if not api_key:
         raise HTTPException(status_code=401, detail="Missing X-API-Key header")
+    if cookie_authenticated and request.method not in {"GET", "HEAD", "OPTIONS"}:
+        origin = request.headers.get("origin")
+        if origin:
+            own_origin = f"{request.url.scheme}://{request.url.netloc}"
+            if not compare_digest(origin, own_origin):
+                raise HTTPException(status_code=403, detail="Origin does not match request origin")
 
     # A Nexuss project token is valid directly for Paradox requests. CLI and
     # SDK clients normally exchange it once for a Paradox pk_ key so they do
     # not persist the external credential in local configuration.
     if api_key.startswith("nxa_"):
-        user = await provision_nexuss_user(await verify_nexuss_api_key(api_key), db)
+        identity = await verify_nexuss_api_key(
+            api_key, require_envx=settings.paradox_envx_only_auth_enabled
+        )
+        user = await provision_nexuss_user(identity, db)
         request.state.user_id = str(user.id)
         return user
 
